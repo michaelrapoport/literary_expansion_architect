@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Layout } from './components/Layout';
 import { FileUploader } from './components/FileUploader';
@@ -6,147 +7,222 @@ import { ConfigurationPanel } from './components/ConfigurationPanel';
 import { DecisionPanel } from './components/DecisionPanel';
 import { BeatSheetEditor } from './components/BeatSheetEditor';
 import { RefinementPanel } from './components/RefinementPanel';
-import { AppState, Chapter, Choice, NovelMetadata, Beat, GenerationConfig } from './types';
+import { SettingsModal } from './components/SettingsModal';
+import { WorldBiblePanel } from './components/WorldBiblePanel';
+import { ChapterEditor } from './components/ChapterEditor';
+import { QuickChat } from './components/QuickChat';
+import { ExportPreviewModal } from './components/ExportPreviewModal';
+import { AppState, Chapter, Choice, NovelMetadata, Beat, GenerationConfig, ModelConfiguration, LoreEntry, CharacterStatus, SessionAnalytics } from './types';
 import { splitIntoSourceChunks } from './services/fileService';
-import { generateSetup, generateNextChapter, analyzeStyle, extractMetadata, generateBeatSheet, refineChapter } from './services/geminiService';
-import { Download, Loader2, ScanSearch, Wand2, FileSearch, BookOpen, AlignLeft, Bot } from 'lucide-react';
+import { generateSetup, generateNextChapter, analyzeStyle, extractMetadata, generateBeatSheet, refineChapter, generateChapterFromBeat, generateChaosTwist } from './services/geminiService';
+import { saveProject, loadProject, exportProjectToJson, exportProjectToDocxHtml } from './services/persistenceService';
+import { retrieveContext } from './services/knowledgeService';
+import { Loader2, ScanSearch, Wand2, FileSearch, BookOpen, AlignLeft, Bot, Search, ArrowUp, ArrowDown, MoreHorizontal } from 'lucide-react';
 import { GenerateContentResponse } from '@google/genai';
-import { REFINEMENT_OPTIONS } from './constants';
+import { REFINEMENT_OPTIONS, DEFAULT_MODEL_CONFIG } from './constants';
 
 const countWords = (text: string): number => {
   return text.trim().split(/\s+/).filter(w => w.length > 0).length;
 };
 
-// Simple HTML strip for display safety
 const stripHtml = (html: string) => {
    return html.replace(/<[^>]*>?/gm, '');
 };
 
 const App: React.FC = () => {
+  // --- STATE ---
   const [appState, setAppState] = useState<AppState>(AppState.UPLOAD);
   const [sourceChunks, setSourceChunks] = useState<string[]>([]);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [metadata, setMetadata] = useState<NovelMetadata | null>(null);
   
-  // New State for auto-filled data
+  const [modelConfig, setModelConfig] = useState<ModelConfiguration>(DEFAULT_MODEL_CONFIG);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showBible, setShowBible] = useState(false);
+  const [showFindReplace, setShowFindReplace] = useState(false);
+  const [showExportPreview, setShowExportPreview] = useState(false);
+  
   const [autoFilledMetadata, setAutoFilledMetadata] = useState<Partial<NovelMetadata>>({});
   const [beatSheet, setBeatSheet] = useState<Beat[]>([]);
   
-  // Novel State
+  // Novel Data
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [lore, setLore] = useState<LoreEntry[]>([]);
+  const [characters, setCharacters] = useState<CharacterStatus[]>([]);
+  const [analytics, setAnalytics] = useState<SessionAnalytics>({ startTime: Date.now(), wordsGenerated: 0, editingTimeSeconds: 0, sessionsCount: 1 });
+
+  // Stream & UI
   const [currentStreamingContent, setCurrentStreamingContent] = useState('');
-  
-  // Interaction State
   const [currentChoices, setCurrentChoices] = useState<Choice[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   
-  // Auto-Pilot State
-  const [autoPilotRemaining, setAutoPilotRemaining] = useState(0);
+  // AutoPilot State (Using Ref for reliable async loop access)
+  const autoPilotRef = useRef(0);
+  const [autoPilotRemaining, setAutoPilotRemaining] = useState(0); 
+  const [consecutiveHighEnergy, setConsecutiveHighEnergy] = useState(0); 
 
-  // Refs for auto-scrolling
   const novelEndRef = useRef<HTMLDivElement>(null);
+  const analyticsInterval = useRef<any>(null);
 
-  // Auto-scroll to bottom of novel when content updates
+  // --- PERSISTENCE & INIT ---
   useEffect(() => {
-    if (novelEndRef.current) {
-      novelEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [chapters, currentStreamingContent]);
+      loadProject().then(saved => {
+          if (saved) {
+             // Logic to resume could go here
+          }
+      });
 
-  // Auto-Pilot Effect Logic
+      analyticsInterval.current = setInterval(() => {
+          setAnalytics(prev => ({ ...prev, editingTimeSeconds: prev.editingTimeSeconds + 1 }));
+      }, 1000);
+
+      return () => clearInterval(analyticsInterval.current);
+  }, []);
+
+  // Auto-Save Background
   useEffect(() => {
-    if (autoPilotRemaining > 0 && !isGenerating) {
-        let timer: ReturnType<typeof setTimeout>;
-        
-        // If we are at Refinement Selection -> Skip it
-        if (appState === AppState.REFINEMENT_SELECTION) {
-            timer = setTimeout(() => {
-                handleRefinementSkip();
-            }, 1000); // Small delay for visual feedback
-        }
-        
-        // If we are at Decision -> Make Decision 'A' and Continue
-        if (appState === AppState.DECISION) {
-            timer = setTimeout(() => {
-                // Default to Choice A or "Continue"
-                const defaultChoice = currentChoices.length > 0 ? currentChoices[0].text : "Continue the story naturally.";
-                // Decrement happens inside handleDecision wrapper logic or here?
-                // We decrement AFTER the decision initiates the next chunk
-                handleDecision(defaultChoice, "", 'new', true); 
-            }, 1000);
-        }
+      if (metadata && chapters.length > 0) {
+          const timeout = setTimeout(() => {
+              saveProject({
+                  metadata,
+                  chapters,
+                  lore,
+                  characters,
+                  analytics,
+                  lastSaved: Date.now()
+              });
+          }, 5000); 
+          return () => clearTimeout(timeout);
+      }
+  }, [metadata, chapters, lore, characters, analytics]);
 
-        return () => {
-            if (timer) clearTimeout(timer);
-        };
-    }
-  }, [appState, autoPilotRemaining, isGenerating, currentChoices]);
+  // --- ACTIONS ---
 
-  const handleFileLoaded = async (content: string) => {
-    const chunks = splitIntoSourceChunks(content);
-    setSourceChunks(chunks);
-    
-    // START AUTO-DETECTION FLOW
-    setAppState(AppState.DETECTING_METADATA);
-    try {
-      const extractedData = await extractMetadata(content);
-      setAutoFilledMetadata(extractedData);
-      setAppState(AppState.SETUP);
-    } catch (e) {
-      console.error("Metadata extraction failed", e);
-      // Fallback to empty setup
-      setAppState(AppState.SETUP);
-    }
+  const handleDownloadJson = () => {
+     if (metadata) exportProjectToJson({ metadata, chapters, lore, characters, analytics, lastSaved: Date.now() });
   };
 
-  const handleMetadataSubmit = async (data: NovelMetadata) => {
-    // Save metadata temporarily
-    setMetadata(data);
-    
-    // Proceed to Detailed Configuration instead of straight to Beat Sheet
-    setAppState(AppState.CONFIGURATION);
+  const handleDownloadDocx = () => {
+      setShowExportPreview(true);
   };
-  
-  const handleConfigurationSubmit = async (config: GenerationConfig) => {
-      if (!metadata) return;
-      const updatedMetadata = { ...metadata, config };
-      setMetadata(updatedMetadata);
-      
-      // NOW Generate Beat Sheet
-      setAppState(AppState.GENERATING_BEATS);
-      try {
-        const fullText = sourceChunks.join('\n\n');
-        const beats = await generateBeatSheet(fullText, updatedMetadata);
-        setBeatSheet(beats);
-        setAppState(AppState.BEAT_SHEET);
-      } catch (e) {
-        console.error("Beat sheet generation failed", e);
-        setBeatSheet([{ id: '1', description: 'Start of story' }]);
-        setAppState(AppState.BEAT_SHEET);
+
+  const handleSaveButton = () => {
+      // Explicitly open the Export Preview modal
+      if (chapters.length > 0 && metadata) {
+        setShowExportPreview(true);
       }
   };
 
-  const handleBeatSheetConfirm = async (confirmedBeats: Beat[]) => {
-    if (!metadata) return;
+  const moveChapter = (index: number, direction: 'up' | 'down') => {
+      if (direction === 'up' && index === 0) return;
+      if (direction === 'down' && index === chapters.length - 1) return;
+      
+      const newChapters = [...chapters];
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      [newChapters[index], newChapters[targetIndex]] = [newChapters[targetIndex], newChapters[index]];
+      setChapters(newChapters);
+  };
 
-    const finalMetadata = { ...metadata, beatSheet: confirmedBeats };
-    setMetadata(finalMetadata);
+  const handleFindReplace = (findText: string, replaceText: string) => {
+      const newChapters = chapters.map(c => ({
+          ...c,
+          content: c.content.replaceAll(findText, replaceText)
+      }));
+      setChapters(newChapters);
+      alert(`Replaced instances of "${findText}" with "${replaceText}".`);
+      setShowFindReplace(false);
+  };
 
-    setAppState(AppState.ANALYZING);
-    
-    try {
-        const styleDNA = await analyzeStyle(sourceChunks[0] || "");
-        const metadataWithStyle = { ...finalMetadata, styleAnalysis: styleDNA };
-        setMetadata(metadataWithStyle);
-        
-        setAppState(AppState.PROCESSING);
-        await processGeminiLoop(metadataWithStyle, sourceChunks[0], true, 'new');
-    } catch (e) {
-        console.error("Analysis failed", e);
-        alert("Style Analysis failed. Please try again.");
-        setAppState(AppState.SETUP);
+  const handleChaosMode = async () => {
+      if (!metadata) return;
+      const context = chapters.slice(-3).map(c => c.content).join('\n').slice(-5000);
+      setIsGenerating(true);
+      try {
+        const chaosChoice = await generateChaosTwist(context, metadata, modelConfig.analysisModel);
+        setCurrentChoices(prev => [chaosChoice, ...prev]);
+      } finally {
+        setIsGenerating(false);
+      }
+  };
+
+  const handleUndo = () => {
+    if (chapters.length === 0) return;
+    if (window.confirm("Undo the last chapter generation? This cannot be reversed.")) {
+        setChapters(prev => prev.slice(0, -1));
+        setCurrentChunkIndex(prev => Math.max(0, prev - 1));
+        // Reset AutoPilot if active
+        autoPilotRef.current = 0;
+        setAutoPilotRemaining(0);
+        // Reset to Decision state if we have chapters, else Setup
+        setAppState(chapters.length > 1 ? AppState.DECISION : AppState.SETUP);
     }
   };
+
+  const handleAutoPilot = (count: number) => {
+      // Set Ref for logic
+      autoPilotRef.current = count;
+      // Set State for UI
+      setAutoPilotRemaining(count);
+      
+      // Trigger the first step immediately
+      const defaultChoice = currentChoices.find(c => c.text.includes("Continue")) || currentChoices[0] || { id: 'Auto', text: "Continue story naturally.", rationale: 'Auto-Pilot', type: 'Other' };
+      handleDecision(defaultChoice.text, "", "new");
+  };
+
+  const handleRefinement = async (selectedOptionIds: string[]) => {
+      if (chapters.length === 0 || !metadata) return;
+      
+      const lastChapter = chapters[chapters.length - 1];
+      const styleDNA = metadata.styleAnalysis || "";
+      const storyHistory = chapters.slice(0, -1).map(c => c.content).join('\n'); 
+      
+      const options = REFINEMENT_OPTIONS.filter(opt => selectedOptionIds.includes(opt.id));
+      const instructions = options.map(o => o.description).join(" ");
+      
+      setAppState(AppState.REFINING);
+      setIsGenerating(true);
+      setCurrentStreamingContent('');
+
+      try {
+          const streamResult = await refineChapter(lastChapter.content, instructions, styleDNA, storyHistory, modelConfig.draftingModel);
+          
+          let fullRefinedText = "";
+          for await (const chunk of streamResult) {
+              if (chunk.text) {
+                  const clean = stripHtml(chunk.text);
+                  fullRefinedText += clean;
+                  setCurrentStreamingContent(clean); 
+                  
+                  // Live update for feedback
+                  setChapters(prev => {
+                      const copy = [...prev];
+                      copy[copy.length - 1].content = fullRefinedText;
+                      return copy;
+                  });
+              }
+          }
+          
+          // Finalize with version history
+           setChapters(prev => {
+                const copy = [...prev];
+                const final = copy[copy.length - 1];
+                final.content = fullRefinedText;
+                final.history = [...(final.history || []), fullRefinedText];
+                final.currentVersionIndex = (final.history.length || 1) - 1;
+                return copy;
+           });
+
+      } catch (e) {
+          console.error("Refinement failed", e);
+          alert("Refinement process encountered an error.");
+      } finally {
+          setIsGenerating(false);
+          setCurrentStreamingContent('');
+          setAppState(AppState.DECISION);
+      }
+  };
+
+  // --- GENERATION LOGIC ---
 
   const processGeminiLoop = async (
     meta: NovelMetadata,
@@ -159,23 +235,26 @@ const App: React.FC = () => {
     setIsGenerating(true);
     setCurrentStreamingContent('');
     
+    const fullStoryHistory = chapters.map(c => c.content).join('\n\n');
+    const dynamicContext = retrieveContext(chunkText + userChoice, lore, characters);
+    const enrichedHistory = fullStoryHistory + dynamicContext; 
+
+    // Pacing Logic
+    const currentPacing = meta.config?.pacingSpeed;
+    if (currentPacing === 'Fast' || currentPacing === 'Balanced') {
+        setConsecutiveHighEnergy(prev => prev + 1);
+    } else {
+        setConsecutiveHighEnergy(0);
+    }
+
     try {
       let streamResult: AsyncIterable<GenerateContentResponse>;
       
       if (isFirst) {
-        streamResult = await generateSetup(meta, chunkText);
+        streamResult = await generateSetup(meta, chunkText, modelConfig.draftingModel);
       } else {
-        // Concatenate all previous chapter content to form the full story history
-        const fullStoryHistory = chapters.map(c => c.content).join('\n\n');
-        
-        // Pass full history + placement intent
         streamResult = await generateNextChapter(
-            meta, 
-            fullStoryHistory, 
-            userChoice, 
-            customInstr, 
-            chunkText,
-            placement === 'new'
+            meta, enrichedHistory, userChoice, customInstr, chunkText, placement === 'new', modelConfig.draftingModel
         );
       }
 
@@ -183,313 +262,276 @@ const App: React.FC = () => {
       const splitMarker = '|||STRATEGIC_SPLIT|||';
       
       for await (const chunk of streamResult) {
-         const text = chunk.text;
-         if (text) {
-             const cleanedChunk = stripHtml(text);
-             fullResponseText += cleanedChunk;
-             
-             // Dynamic visual truncation for streaming
-             let displayLimit = fullResponseText.indexOf(splitMarker);
-             if (displayLimit === -1) {
-                 // Fallback visual check
-                 const match = fullResponseText.match(/\n\s*\[\s*\{\s*"id"/);
-                 if (match && match.index) displayLimit = match.index;
-             }
-
-             if (displayLimit !== -1) {
-                 setCurrentStreamingContent(fullResponseText.substring(0, displayLimit));
-             } else {
-                 setCurrentStreamingContent(fullResponseText);
-             }
+         if (chunk.text) {
+             fullResponseText += stripHtml(chunk.text);
+             const displayLimit = fullResponseText.indexOf(splitMarker);
+             setCurrentStreamingContent(displayLimit !== -1 ? fullResponseText.substring(0, displayLimit) : fullResponseText);
          }
       }
 
-      // Final Split Logic
       let storyPart = fullResponseText;
       let jsonPart = '';
-      
       const splitIndex = fullResponseText.indexOf(splitMarker);
-      
       if (splitIndex !== -1) {
           storyPart = fullResponseText.substring(0, splitIndex);
           jsonPart = fullResponseText.substring(splitIndex + splitMarker.length);
       } else {
-          // Fallback: Try to find the JSON start regex if marker missing
-          // Look for [ followed by { "id":
-          const jsonMatch = fullResponseText.match(/\[\s*\{\s*"id"\s*:/);
-          if (jsonMatch && jsonMatch.index !== undefined) {
+           const jsonMatch = fullResponseText.match(/\[\s*\{\s*"id"\s*:/);
+           if (jsonMatch && jsonMatch.index !== undefined) {
                storyPart = fullResponseText.substring(0, jsonMatch.index);
                jsonPart = fullResponseText.substring(jsonMatch.index);
-          }
+           }
       }
       
       const finalStoryContent = storyPart.trim();
-      
-      if (placement === 'new') {
-        const newChapter: Chapter = {
-            id: chapters.length + 1,
-            title: `Chapter ${chapters.length + 1}`,
-            content: finalStoryContent
-        };
-        setChapters(prev => [...prev, newChapter]);
-      } else {
-        // Append mode
-        setChapters(prev => {
-            const updated = [...prev];
-            const lastIdx = updated.length - 1;
-            if (lastIdx >= 0) {
-                // Add a scene break visual separator
-                updated[lastIdx] = {
-                    ...updated[lastIdx],
-                    content: updated[lastIdx].content + '\n\n* * *\n\n' + finalStoryContent
-                };
-            }
-            return updated;
-        });
-      }
+      const newWords = countWords(finalStoryContent);
+      setAnalytics(prev => ({ ...prev, wordsGenerated: prev.wordsGenerated + newWords }));
+
+      const newChapter: Chapter = {
+          id: chapters.length + 1,
+          title: `Chapter ${chapters.length + 1}`,
+          content: finalStoryContent,
+          status: 'completed',
+          lastModified: Date.now(),
+          history: [finalStoryContent],
+          currentVersionIndex: 0,
+          pacingScore: Math.floor(Math.random() * 8) + 2
+      };
+      setChapters(prev => [...prev, newChapter]);
 
       setCurrentStreamingContent('');
-
+      
+      let nextChoices: Choice[] = [];
       if (jsonPart) {
           try {
               const cleanJson = jsonPart.replace(/```json/g, '').replace(/```/g, '').trim();
-              const parsedChoices = JSON.parse(cleanJson);
-              setCurrentChoices(parsedChoices);
-              setAppState(AppState.REFINEMENT_SELECTION);
-          } catch (e) {
-              console.error("Failed to parse choices JSON", e);
-              setCurrentChoices([{ id: 'A', text: 'Continue naturally', rationale: 'Fallback due to parsing error', type: 'Other' }]);
-              setAppState(AppState.REFINEMENT_SELECTION);
-          }
+              nextChoices = JSON.parse(cleanJson);
+          } catch (e) { nextChoices = [{ id: 'A', text: 'Continue', rationale: 'Parse Error', type: 'Other' }]; }
+      } else { nextChoices = [{ id: 'A', text: 'Continue', rationale: 'Auto', type: 'Other' }]; }
+      
+      // Pacing Injection
+      let pacingCount = consecutiveHighEnergy;
+      if (currentPacing === 'Fast' || currentPacing === 'Balanced') pacingCount++;
+      else pacingCount = 0;
+
+      if (pacingCount >= 3) {
+          nextChoices.unshift({
+            id: 'BREATHING_ROOM',
+            text: 'Insert a "Breathing Room" Chapter',
+            rationale: 'System detects high narrative intensity. Slow down to process character emotions.',
+            type: 'Pacing'
+          });
+      }
+
+      setCurrentChoices(nextChoices);
+
+      // --- AUTOPILOT LOGIC CHECK ---
+      if (autoPilotRef.current > 0) {
+          // Decrement
+          autoPilotRef.current -= 1;
+          setAutoPilotRemaining(autoPilotRef.current);
+
+          const nextChoice = nextChoices.find(c => c.type !== 'Pacing') || nextChoices[0];
+          
+          // Small delay for UI update before next recursion
+          setTimeout(() => {
+              handleDecision(nextChoice.text, "Auto-pilot continuation", "new");
+          }, 2000);
       } else {
-          setCurrentChoices([{ id: 'A', text: 'Continue', rationale: 'Auto-generated path', type: 'Other' }]);
           setAppState(AppState.REFINEMENT_SELECTION);
       }
 
     } catch (error) {
         console.error("Gemini Error:", error);
-        alert("An error occurred during generation. Please check console.");
-        setAppState(AppState.SETUP);
-        setAutoPilotRemaining(0); // Stop auto-pilot on error
+        alert("Generation interrupted.");
+        setAppState(AppState.DECISION); 
     } finally {
         setIsGenerating(false);
     }
   };
 
-  const handleRefinementSelection = async (selectedIds: string[]) => {
-      const selectedLabels = REFINEMENT_OPTIONS
-          .filter(opt => selectedIds.includes(opt.id))
-          .map(opt => opt.label);
-          
-      const instructions = selectedLabels.join(", ");
-      const currentChapter = chapters[chapters.length - 1];
-      
-      if (!currentChapter || !metadata?.styleAnalysis) return;
-
-      setAppState(AppState.REFINING);
-      setIsGenerating(true);
-      setCurrentStreamingContent(currentChapter.content);
-
-      try {
-          const fullStoryHistory = chapters.map(c => c.content).join('\n\n');
-          
-          const streamResult = await refineChapter(
-              currentChapter.content,
-              instructions,
-              metadata.styleAnalysis,
-              fullStoryHistory // Pass context for continuity
-          );
-          
-          let fullRefinedText = "";
-          for await (const chunk of streamResult) {
-              const text = chunk.text;
-              if (text) {
-                  const cleaned = stripHtml(text);
-                  fullRefinedText += cleaned;
-                  setCurrentStreamingContent(fullRefinedText);
-              }
-          }
-          
-          const updatedChapters = [...chapters];
-          updatedChapters[updatedChapters.length - 1].content = fullRefinedText;
-          setChapters(updatedChapters);
-          
-          setAppState(AppState.REFINEMENT_SELECTION);
-
-      } catch (e) {
-          console.error("Refinement failed", e);
-          alert("Refinement failed.");
-          setAppState(AppState.REFINEMENT_SELECTION);
-          setAutoPilotRemaining(0);
-      } finally {
-          setIsGenerating(false);
-          setCurrentStreamingContent('');
-      }
+  // --- EVENT HANDLERS ---
+  const handleFileLoaded = async (content: string) => {
+    const chunks = splitIntoSourceChunks(content);
+    setSourceChunks(chunks);
+    setAppState(AppState.DETECTING_METADATA);
+    try {
+      const extractedData = await extractMetadata(content, modelConfig.analysisModel);
+      setAutoFilledMetadata(extractedData);
+      setAppState(AppState.SETUP);
+    } catch (e) { setAppState(AppState.SETUP); }
   };
-
-  const handleRefinementSkip = () => {
-      setAppState(AppState.DECISION);
+  const handleMetadataSubmit = (data: NovelMetadata) => { setMetadata(data); setAppState(AppState.CONFIGURATION); };
+  const handleConfigurationSubmit = (config: GenerationConfig) => {
+      if (metadata) { setMetadata({ ...metadata, config }); setAppState(AppState.GENERATING_BEATS); handleBeatGen(); }
   };
-
-  const handleDecision = async (choiceText: string, customInstructions: string, placement: 'new' | 'append', isAutoPilotStep: boolean = false) => {
-      const nextIndex = currentChunkIndex + 1;
-      
-      if (nextIndex >= sourceChunks.length) {
-          setAppState(AppState.FINISHED);
-          setAutoPilotRemaining(0);
-          return;
-      }
-
-      if (isAutoPilotStep) {
-          setAutoPilotRemaining(prev => Math.max(0, prev - 1));
-      }
-
-      setCurrentChunkIndex(nextIndex);
+  const handleBeatGen = async () => {
+       if(!metadata) return;
+       try {
+        const fullText = sourceChunks.join('\n\n');
+        const beats = await generateBeatSheet(fullText, metadata, modelConfig.analysisModel);
+        setBeatSheet(beats);
+        setAppState(AppState.BEAT_SHEET);
+      } catch(e) { setBeatSheet([{ id: '1', description: 'Start' }]); setAppState(AppState.BEAT_SHEET); }
+  };
+  const handleBeatSheetConfirm = async (beats: Beat[]) => {
+      if(!metadata) return;
+      const finalMeta = { ...metadata, beatSheet: beats };
+      setMetadata(finalMeta);
+      setAppState(AppState.ANALYZING);
+      const styleDNA = await analyzeStyle(sourceChunks[0] || "", modelConfig.analysisModel);
+      setMetadata({ ...finalMeta, styleAnalysis: styleDNA });
       setAppState(AppState.PROCESSING);
-      setCurrentChoices([]);
+      await processGeminiLoop({ ...finalMeta, styleAnalysis: styleDNA }, sourceChunks[0], true, 'new');
+  };
+  
+  const handleDecision = (text: string, instr: string, place: 'new' | 'append') => {
+      const nextIdx = currentChunkIndex + 1;
       
-      if (metadata) {
-          await processGeminiLoop(
-              metadata, 
-              sourceChunks[nextIndex], 
-              false, // Not first
-              placement, // User selected placement
-              choiceText, 
-              customInstructions
-          );
+      if (text === 'Insert a "Breathing Room" Chapter' || text.includes('Breathing Room')) {
+          if (metadata) {
+              const slowConfig: GenerationConfig = { 
+                  ...metadata.config!, 
+                  pacingSpeed: 'Slow Burn', 
+                  expansionDepth: 'Scene',
+                  dialogueRatio: 'Internal Monologue',
+                  sensoryDensity: 'High'
+              };
+              setAppState(AppState.PROCESSING);
+              const interludeMeta = { ...metadata, config: slowConfig };
+              const interludeInstr = `Write a slow-paced, atmospheric interlude. ${instr}`;
+              processGeminiLoop(interludeMeta, sourceChunks[currentChunkIndex] || "", false, place, "Interlude", interludeInstr);
+              setConsecutiveHighEnergy(0);
+              return;
+          }
       }
+
+      if (nextIdx >= sourceChunks.length) { setAppState(AppState.FINISHED); return; }
+      setCurrentChunkIndex(nextIdx);
+      setAppState(AppState.PROCESSING);
+      if(metadata) processGeminiLoop(metadata, sourceChunks[nextIdx], false, place, text, instr);
   };
 
-  const handleAutoPilotEngage = (count: number) => {
-     setAutoPilotRemaining(count);
-     // Trigger the first step of auto-pilot by taking Choice A immediately
-     const defaultChoice = currentChoices.length > 0 ? currentChoices[0].text : "Continue the story naturally.";
-     handleDecision(defaultChoice, "", 'new', true);
-  };
-
-  const handleDownload = () => {
-      const fullText = chapters.map(c => `# ${c.title}\n\n${c.content}`).join('\n\n');
-      const blob = new Blob([fullText], { type: 'text/markdown' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${metadata?.title || 'expanded_novel'}.md`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-  };
-
+  // --- RENDER ---
   return (
-    <Layout>
-      {appState === AppState.UPLOAD && <FileUploader onFileLoaded={handleFileLoaded} />}
+    <Layout 
+        onExport={handleDownloadJson} 
+        onExportDocx={handleDownloadDocx}
+        canExport={chapters.length > 0}
+        onSave={handleSaveButton} 
+        onUndo={chapters.length > 0 ? handleUndo : undefined}
+        onOpenSettings={() => setShowSettings(true)}
+        onOpenBible={() => setShowBible(!showBible)}
+    >
+      {showSettings && <SettingsModal config={modelConfig} onUpdate={setModelConfig} onClose={() => setShowSettings(false)} />}
       
-      {appState === AppState.DETECTING_METADATA && (
-        <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center animate-fade-in bg-stone-950">
-           <div className="w-24 h-24 bg-stone-900 rounded-full flex items-center justify-center mb-8 animate-pulse">
-               <FileSearch className="w-10 h-10 text-stone-300" />
-           </div>
-           <h2 className="text-3xl font-display font-bold text-stone-100 mb-2">Analyzing Manuscript</h2>
-           <p className="text-stone-500 font-ui tracking-wide text-sm">DETECTING NARRATIVE SIGNATURES...</p>
-        </div>
+      {showExportPreview && metadata && (
+          <ExportPreviewModal 
+            projectState={{ metadata, chapters, lore, characters, analytics, lastSaved: Date.now() }}
+            onClose={() => setShowExportPreview(false)}
+            onConfirm={() => {
+                exportProjectToDocxHtml({ metadata, chapters, lore, characters, analytics, lastSaved: Date.now() });
+                setShowExportPreview(false);
+            }}
+          />
       )}
 
-      {appState === AppState.SETUP && (
-        <SetupForm 
-          initialData={autoFilledMetadata} 
-          onSubmit={handleMetadataSubmit} 
-        />
-      )}
-      
-      {appState === AppState.CONFIGURATION && (
-        <ConfigurationPanel onConfirm={handleConfigurationSubmit} />
-      )}
-
-      {appState === AppState.GENERATING_BEATS && (
-        <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center animate-fade-in bg-stone-950">
-           <div className="w-24 h-24 bg-[#d4af37]/20 rounded-full flex items-center justify-center mb-8 animate-pulse">
-               <Wand2 className="w-10 h-10 text-[#d4af37]" />
-           </div>
-           <h2 className="text-3xl font-display font-bold text-stone-100 mb-2">Architecting Structure</h2>
-           <p className="text-stone-500 font-ui tracking-wide text-sm">EXTRACTING NARRATIVE VERTEBRAE...</p>
-        </div>
-      )}
-
-      {appState === AppState.BEAT_SHEET && (
-        <BeatSheetEditor 
-          initialBeats={beatSheet} 
-          onConfirm={handleBeatSheetConfirm} 
-        />
-      )}
-      
-      {appState === AppState.ANALYZING && (
-          <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center animate-fade-in bg-stone-950">
-             <div className="w-24 h-24 bg-stone-900 rounded-full flex items-center justify-center mb-8 relative">
-                 <ScanSearch className="w-10 h-10 text-stone-200 z-10" />
-                 <div className="absolute inset-0 border-4 border-stone-700 rounded-full animate-ping opacity-30"></div>
-             </div>
-             <h2 className="text-3xl font-display font-bold text-stone-100 mb-2">Decapsulating DNA</h2>
-             <p className="text-stone-500 max-w-md font-body italic">
-                 "Style is the feather in the arrow, not the feather in the cap."
-             </p>
+      {showFindReplace && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
+              <div className="bg-stone-900 p-6 border border-stone-700 rounded-sm w-96">
+                  <h3 className="text-stone-100 font-bold mb-4">Global Find & Replace</h3>
+                  <form onSubmit={(e) => {
+                      e.preventDefault();
+                      const fd = new FormData(e.currentTarget);
+                      handleFindReplace(fd.get('find') as string, fd.get('replace') as string);
+                  }}>
+                      <input name="find" placeholder="Find..." className="w-full mb-3 p-2 bg-stone-950 border border-stone-800 text-stone-300" />
+                      <input name="replace" placeholder="Replace with..." className="w-full mb-4 p-2 bg-stone-950 border border-stone-800 text-stone-300" />
+                      <div className="flex justify-end gap-2">
+                          <button type="button" onClick={() => setShowFindReplace(false)} className="text-stone-500 text-xs">Cancel</button>
+                          <button type="submit" className="bg-[#d4af37] text-stone-900 px-4 py-1 text-xs font-bold rounded-sm">Execute</button>
+                      </div>
+                  </form>
+              </div>
           </div>
       )}
-      
-      {(appState === AppState.PROCESSING || appState === AppState.DECISION || appState === AppState.FINISHED || appState === AppState.REFINEMENT_SELECTION || appState === AppState.REFINING) && (
+
+      <QuickChat 
+        context={chapters.slice(-3).map(c => c.content).join('\n')}
+        loreContext={JSON.stringify(lore)}
+        model={modelConfig.draftingModel}
+      />
+
+      {(appState === AppState.UPLOAD || appState === AppState.DETECTING_METADATA || appState === AppState.SETUP || appState === AppState.CONFIGURATION || appState === AppState.GENERATING_BEATS || appState === AppState.BEAT_SHEET || appState === AppState.ANALYZING) ? (
+          <div className="w-full h-full flex flex-col">
+             {appState === AppState.UPLOAD && <FileUploader onFileLoaded={handleFileLoaded} />}
+             {appState === AppState.SETUP && <SetupForm initialData={autoFilledMetadata} onSubmit={handleMetadataSubmit} />}
+             {appState === AppState.CONFIGURATION && <ConfigurationPanel onConfirm={handleConfigurationSubmit} />}
+             {appState === AppState.BEAT_SHEET && <BeatSheetEditor initialBeats={beatSheet} onConfirm={handleBeatSheetConfirm} />}
+             {(appState === AppState.DETECTING_METADATA || appState === AppState.GENERATING_BEATS || appState === AppState.ANALYZING) && (
+                 <div className="flex flex-col items-center justify-center h-full text-stone-400">
+                     <Loader2 className="w-10 h-10 animate-spin mb-4" />
+                     <p className="uppercase tracking-widest font-bold">Processing Neural Tasks...</p>
+                 </div>
+             )}
+          </div>
+      ) : (
         <div className="w-full flex h-full bg-stone-950 overflow-hidden relative">
           
-          {/* Main Novel Display Area - Fixed Card Layout */}
           <div className="flex-1 flex items-center justify-center p-4 md:p-8 h-full">
             <div className="w-full max-w-[900px] h-full bg-stone-900 shadow-2xl border border-stone-800 flex flex-col relative rounded-sm">
                 
-                {/* Book Header / Running Head - Fixed */}
-                <div className="flex-none h-16 border-b border-stone-800 flex items-center justify-between px-8 md:px-12 bg-stone-900/95 backdrop-blur z-10">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-stone-500">{metadata?.author}</span>
+                <div className="flex-none h-16 border-b border-stone-800 flex items-center justify-between px-8 bg-stone-900/95 backdrop-blur z-10">
                     <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-stone-500">{metadata?.title}</span>
+                    <button onClick={() => setShowFindReplace(true)} className="p-2 text-stone-500 hover:text-stone-300"><Search className="w-4 h-4" /></button>
                 </div>
 
-                {/* Scrollable Content Area */}
-                <div className="flex-1 overflow-y-auto novel-scroll p-12 md:p-20 scroll-smooth relative">
-                    {chapters.length === 0 && isGenerating && (
-                        <div className="mt-10 mb-12 text-center border-b-2 border-stone-800 pb-12">
-                            <h1 className="text-4xl md:text-5xl font-display font-bold text-stone-100 mb-4">{metadata?.title}</h1>
-                            <p className="text-stone-500 font-display italic text-xl">Expansion in progress...</p>
-                        </div>
-                    )}
-                    
-                    {chapters.map((chapter) => (
-                        <div key={chapter.id} className="mb-24 animate-fade-in">
-                            <div className="flex justify-between items-end mb-12 border-b border-stone-800 pb-2">
-                            <span className="text-xs font-bold tracking-widest uppercase text-stone-500">Chapter {chapter.id}</span>
-                            <span className="flex items-center gap-2 text-[10px] font-mono text-stone-600 uppercase">
-                                <AlignLeft className="w-3 h-3" />
-                                {countWords(chapter.content)} Words
-                            </span>
+                <div className="flex-1 overflow-y-auto novel-scroll p-12 scroll-smooth relative">
+                    {chapters.map((chapter, idx) => (
+                        <div key={chapter.id} className="animate-fade-in relative group">
+                            
+                            {/* Chapter Divider Logic */}
+                            {idx > 0 && (
+                                <div className="flex items-center justify-center py-16 opacity-30 select-none">
+                                    <div className="h-px bg-gradient-to-r from-transparent via-stone-500 to-transparent w-32"></div>
+                                    <div className="mx-4 text-stone-500">
+                                         <MoreHorizontal className="w-5 h-5" />
+                                    </div>
+                                    <div className="h-px bg-gradient-to-r from-transparent via-stone-500 to-transparent w-32"></div>
+                                </div>
+                            )}
+
+                            <div className="flex justify-between items-end mb-6 border-b border-stone-800 pb-2">
+                                <span className="text-xs font-bold tracking-widest uppercase text-stone-500">{chapter.title}</span>
+                                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button onClick={() => moveChapter(idx, 'up')} className="p-1 hover:text-[#d4af37]"><ArrowUp className="w-3 h-3" /></button>
+                                    <button onClick={() => moveChapter(idx, 'down')} className="p-1 hover:text-[#d4af37]"><ArrowDown className="w-3 h-3" /></button>
+                                </div>
                             </div>
-                            <div className="font-body leading-[2.1] text-[1.15rem] text-stone-300 text-justify">
-                                <div className="whitespace-pre-wrap">{chapter.content}</div>
-                            </div>
+
+                            <ChapterEditor 
+                                content={chapter.content} 
+                                history={chapter.history || [chapter.content]}
+                                onHistoryUpdate={(newHistory) => {
+                                    const updated = [...chapters];
+                                    updated[idx].history = newHistory;
+                                    setChapters(updated);
+                                }}
+                                isEditable={true} 
+                                model={modelConfig.draftingModel}
+                                onChange={(newText) => {
+                                    const updated = [...chapters];
+                                    updated[idx].content = newText;
+                                    setChapters(updated);
+                                }} 
+                            />
                         </div>
                     ))}
                     
-                    {/* Streaming Content */}
                     {isGenerating && (
-                        <div className="animate-fade-in">
-                            <div className="flex justify-between items-end mb-8 border-b border-stone-800 pb-2 opacity-60">
-                            <span className="text-xs font-bold tracking-widest uppercase text-stone-500">
-                                {appState === AppState.REFINING 
-                                    ? `Polishing Chapter ${chapters.length}` 
-                                    : (chapters.length > 0 ? 'Generating Continuation...' : 'Generating Chapter 1')
-                                }
-                            </span>
-                            <span className="flex items-center gap-2 text-[10px] font-mono text-stone-500 uppercase">
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                    {countWords(currentStreamingContent)} Words
-                            </span>
-                            </div>
-                            <div className="font-body leading-[2.1] text-[1.15rem] text-stone-300 text-justify animate-pulse opacity-80">
-                                <div className="whitespace-pre-wrap">{currentStreamingContent}</div>
-                                <span className="inline-block w-1.5 h-6 bg-stone-500 ml-1 animate-blink align-middle"></span>
+                        <div className="animate-fade-in pb-20 pt-10">
+                            <div className="font-body leading-[2.1] text-[1.15rem] text-stone-300 text-justify animate-pulse opacity-80 whitespace-pre-wrap">
+                                {currentStreamingContent}
                             </div>
                         </div>
                     )}
@@ -497,47 +539,30 @@ const App: React.FC = () => {
                     <div ref={novelEndRef} className="h-16" />
                 </div>
             </div>
-
-            {/* Floating Status Indicators (positioned relative to main area) */}
-            {autoPilotRemaining > 0 && (
-                <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-[#d4af37]/90 text-stone-900 px-6 py-2 rounded-full shadow-lg z-40 flex items-center gap-3 animate-pulse pointer-events-none">
-                    <Bot className="w-4 h-4" />
-                    <span className="text-xs font-bold uppercase tracking-wider">Auto-Pilot Active: {autoPilotRemaining} Ch remaining</span>
-                </div>
-            )}
-
-            {isGenerating && (
-                <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-stone-800 text-stone-100 px-8 py-4 rounded-full shadow-2xl flex items-center gap-4 z-30 font-ui text-sm tracking-wide border border-stone-700 pointer-events-none">
-                    <Loader2 className="w-4 h-4 animate-spin text-[#d4af37]" />
-                    <span className="font-medium uppercase">
-                        {appState === AppState.REFINING ? 'Polishing Prose...' : 'Architecting Expansion...'}
-                    </span>
-                    <span className="ml-2 font-mono text-xs text-stone-400 border-l border-stone-600 pl-4">
-                        {countWords(currentStreamingContent)} w
-                    </span>
-                </div>
-            )}
-            
-            {appState === AppState.FINISHED && (
-                <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-50">
-                    <button onClick={handleDownload} className="bg-[#d4af37] hover:bg-[#c5a028] text-stone-900 px-10 py-5 rounded-sm shadow-2xl font-bold font-display text-xl flex items-center gap-3 transition transform hover:-translate-y-1">
-                        <BookOpen className="w-6 h-6" />
-                        Download Manuscript
-                    </button>
-                </div>
-            )}
           </div>
 
-          {/* Sidebar Panels */}
-          {appState === AppState.REFINEMENT_SELECTION && (
-             <RefinementPanel onRefine={handleRefinementSelection} onSkip={handleRefinementSkip} />
+          {showBible && (
+            <WorldBiblePanel 
+                lore={lore} 
+                characters={characters} 
+                analytics={analytics} 
+                chapters={chapters}
+                currentChapterText={chapters.length > 0 ? chapters[chapters.length-1].content : ''}
+                model={modelConfig.draftingModel}
+            />
           )}
-
+          {appState === AppState.REFINEMENT_SELECTION && (
+            <RefinementPanel 
+                onRefine={handleRefinement} 
+                onSkip={() => setAppState(AppState.DECISION)} 
+            />
+          )}
           {appState === AppState.DECISION && (
              <DecisionPanel 
                 choices={currentChoices} 
                 onDecision={handleDecision} 
-                onAutoPilot={handleAutoPilotEngage}
+                onAutoPilot={handleAutoPilot} 
+                onChaos={handleChaosMode}
              />
           )}
         </div>

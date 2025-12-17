@@ -1,4 +1,16 @@
-import { RefinementOption } from './types';
+import { RefinementOption, AIModel, ModelConfiguration } from './types';
+
+export const AVAILABLE_MODELS: AIModel[] = [
+  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro (Preview)', description: 'Best for complex reasoning, structural analysis, and deep literary tasks.' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Faster, efficient model suitable for drafting and quicker iterations.' },
+  { id: 'gemini-2.5-flash-lite-latest', name: 'Gemini 2.5 Flash Lite', description: 'Highest speed, optimized for high-volume text processing.' }
+];
+
+export const DEFAULT_MODEL_CONFIG: ModelConfiguration = {
+  provider: 'Google',
+  analysisModel: 'gemini-3-pro-preview',
+  draftingModel: 'gemini-3-pro-preview'
+};
 
 export const LEA_SYSTEM_PROMPT = `Your Role and Persona:
 You are the Literary Expansion Architect (LEA), an advanced AI collaborator designed for professional authors and storytellers. Your purpose is not to write for the user, but to work with them as an analytical and creative partner.

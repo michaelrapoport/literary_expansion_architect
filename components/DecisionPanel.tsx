@@ -1,14 +1,16 @@
+
 import React, { useState } from 'react';
 import { Choice } from '../types';
-import { ArrowRight, MessageSquarePlus, Play, Compass, FilePlus, ArrowDownToLine, Bot, Zap } from 'lucide-react';
+import { ArrowRight, MessageSquarePlus, Play, Compass, FilePlus, ArrowDownToLine, Bot, Zap, Wind, Dices } from 'lucide-react';
 
 interface DecisionPanelProps {
   choices: Choice[];
   onDecision: (choiceId: string, customInstructions: string, placement: 'new' | 'append') => void;
   onAutoPilot: (count: number) => void;
+  onChaos: () => void;
 }
 
-export const DecisionPanel: React.FC<DecisionPanelProps> = ({ choices, onDecision, onAutoPilot }) => {
+export const DecisionPanel: React.FC<DecisionPanelProps> = ({ choices, onDecision, onAutoPilot, onChaos }) => {
   const [selectedChoiceId, setSelectedChoiceId] = useState<string | null>(null);
   const [customInstructions, setCustomInstructions] = useState('');
   const [placement, setPlacement] = useState<'new' | 'append'>('new');
@@ -30,43 +32,84 @@ export const DecisionPanel: React.FC<DecisionPanelProps> = ({ choices, onDecisio
       onDecision(text, "", placement);
   };
 
+  const getChoiceStyles = (choice: Choice, isSelected: boolean) => {
+      if (choice.type === 'Pacing') {
+          return isSelected 
+            ? 'border-cyan-500 bg-cyan-900/20 shadow-[0_0_15px_rgba(6,182,212,0.3)]' 
+            : 'border-cyan-800 bg-cyan-900/10 hover:border-cyan-500 hover:bg-cyan-900/20';
+      }
+      if (choice.type === 'Chaos') {
+          return isSelected
+            ? 'border-purple-500 bg-purple-900/20 shadow-[0_0_15px_rgba(168,85,247,0.3)]'
+            : 'border-purple-800 bg-purple-900/10 hover:border-purple-500 hover:bg-purple-900/20';
+      }
+      return isSelected
+        ? 'border-[#d4af37] bg-stone-800 shadow-lg shadow-black/20'
+        : 'border-stone-700 bg-transparent hover:border-stone-500 hover:bg-stone-800/50';
+  };
+
+  const getTypeColor = (type: string) => {
+      if (type === 'Pacing') return 'text-cyan-400 border-cyan-800';
+      if (type === 'Chaos') return 'text-purple-400 border-purple-800';
+      return 'border-stone-600 text-stone-500';
+  };
+
   return (
     <div className="flex flex-col h-full bg-stone-900 border-l border-stone-800 w-full md:w-[420px] flex-none z-20 text-stone-300">
-      <div className="p-6 border-b border-stone-800 bg-stone-950/50 backdrop-blur-sm">
-        <div className="flex items-center gap-3 mb-1">
-           <Compass className="w-5 h-5 text-[#d4af37]" />
-           <h3 className="font-display font-bold text-xl text-stone-100 tracking-wide">Pathways</h3>
+      <div className="p-6 border-b border-stone-800 bg-stone-950/50 backdrop-blur-sm flex justify-between items-center">
+        <div>
+            <div className="flex items-center gap-3 mb-1">
+            <Compass className="w-5 h-5 text-[#d4af37]" />
+            <h3 className="font-display font-bold text-xl text-stone-100 tracking-wide">Pathways</h3>
+            </div>
+            <p className="text-xs text-stone-500 font-mono uppercase tracking-wider">Select the narrative vector</p>
         </div>
-        <p className="text-xs text-stone-500 font-mono uppercase tracking-wider">Select the narrative vector</p>
+        <button 
+            onClick={onChaos} 
+            className="p-2 bg-purple-500/10 border border-purple-500/30 text-purple-400 rounded-sm hover:bg-purple-500 hover:text-white transition-all"
+            title="Surprise Me (Chaos Mode)"
+        >
+            <Dices className="w-5 h-5" />
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
-        {choices.map((choice) => (
-          <div
-            key={choice.id}
-            onClick={() => setSelectedChoiceId(choice.id)}
-            className={`cursor-pointer rounded-sm border p-5 transition-all duration-300 relative group ${
-              selectedChoiceId === choice.id
-                ? 'border-[#d4af37] bg-stone-800 shadow-lg shadow-black/20'
-                : 'border-stone-700 bg-transparent hover:border-stone-500 hover:bg-stone-800/50'
-            }`}
-          >
-            <div className="flex justify-between items-start mb-3">
-              <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded-full border ${
-                 selectedChoiceId === choice.id ? 'border-[#d4af37]/50 text-[#d4af37]' : 'border-stone-600 text-stone-500'
-              }`}>
-                {choice.type}
-              </span>
-              <span className="font-mono text-xs text-stone-600 group-hover:text-stone-400">{choice.id}</span>
+        {choices.map((choice) => {
+          const isSelected = selectedChoiceId === choice.id;
+          return (
+            <div
+                key={choice.id}
+                onClick={() => setSelectedChoiceId(choice.id)}
+                className={`cursor-pointer rounded-sm border p-5 transition-all duration-300 relative group ${getChoiceStyles(choice, isSelected)}`}
+            >
+                {choice.type === 'Pacing' && (
+                    <div className="absolute top-0 right-0 p-2 text-cyan-500">
+                        <Wind className="w-4 h-4 animate-pulse" />
+                    </div>
+                )}
+                 {choice.type === 'Chaos' && (
+                    <div className="absolute top-0 right-0 p-2 text-purple-500">
+                        <Dices className="w-4 h-4 animate-spin-slow" />
+                    </div>
+                )}
+
+                <div className="flex justify-between items-start mb-3">
+                <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded-full border ${
+                    isSelected && choice.type !== 'Pacing' && choice.type !== 'Chaos' ? 'border-[#d4af37]/50 text-[#d4af37]' : getTypeColor(choice.type)
+                }`}>
+                    {choice.type}
+                </span>
+                <span className="font-mono text-xs text-stone-600 group-hover:text-stone-400">{choice.id}</span>
+                </div>
+                <h4 className={`font-display font-semibold text-lg mb-2 leading-tight ${isSelected ? 'text-white' : 'text-stone-300'}`}>
+                    {choice.text}
+                </h4>
+                <p className="text-xs text-stone-500 leading-relaxed font-ui border-l border-stone-700 pl-3">
+                {choice.rationale}
+                </p>
             </div>
-            <h4 className={`font-display font-semibold text-lg mb-2 leading-tight ${selectedChoiceId === choice.id ? 'text-white' : 'text-stone-300'}`}>
-                {choice.text}
-            </h4>
-            <p className="text-xs text-stone-500 leading-relaxed font-ui border-l border-stone-700 pl-3">
-              {choice.rationale}
-            </p>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="p-6 border-t border-stone-800 bg-stone-950 space-y-5">

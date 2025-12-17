@@ -16,26 +16,42 @@ export interface NovelMetadata {
 }
 
 export interface GenerationConfig {
-  // 1. Structural & Pacing
+  // --- Structure & Pacing ---
   expansionDepth: 'Micro' | 'Scene' | 'Chapter';
   pacingSpeed: 'Slow Burn' | 'Balanced' | 'Fast';
   narrativeFlow: 'Linear' | 'Non-Linear' | 'Branching';
-  
-  // 2. Stylistic & Tonal
+  timeDilation: 'Real-time' | 'Compressed' | 'Expanded Moment' | 'Montage'; // NEW
+  chapterStructure: 'Classic Arc' | 'Slice of Life' | 'Vignette' | 'Cliffhanger'; // NEW
+
+  // --- Voice & Prose (New Section) ---
   tone: 'Dark/Gritty' | 'Light/Whimsical' | 'Academic/Formal' | 'Conversational';
+  proseComplexity: 'Accessible' | 'Standard' | 'Baroque' | 'Experimental'; // NEW
+  sentenceRhythm: 'Staccato' | 'Flowing' | 'Variable' | 'Repetitive'; // NEW
+  vocabularyLevel: 'Simple' | 'College' | 'Archaic' | 'Esoteric'; // NEW
+  metaphorFrequency: 'Sparse' | 'Moderate' | 'Dense' | 'Surreal'; // NEW
+
+  // --- Narrative Mechanics ---
   pov: 'First Person' | 'Third Person Limited' | 'Third Person Omniscient' | 'Second Person';
+  tense: 'Past' | 'Present' | 'Future'; // NEW
+  narrativeDistance: 'Intimate' | 'Close' | 'Distant' | 'Cinematic'; // NEW
+  narrativeReliability: 'Reliable' | 'Unreliable' | 'Naive' | 'Deceptive'; // NEW
+
+  // --- Immersion ---
   sensoryDensity: 'High' | 'Medium' | 'Low';
-  
-  // 3. Character & Dialogue
+  atmosphericFilter: 'Neutral' | 'Hopeful' | 'Oppressive' | 'Eerie' | 'Nostalgic'; // NEW
+
+  // --- Character & Dialogue ---
   dialogueRatio: 'Dialogue Heavy' | 'Balanced' | 'Internal Monologue';
   characterAgency: 'Passive' | 'Active';
   relationshipDynamic: 'Cooperative' | 'Conflict-Driven';
+  subtextLevel: 'On the Nose' | 'Balanced' | 'Deep Subtext' | 'Cryptic'; // NEW
   
-  // 4. World & Setting
+  // --- World & Plot ---
   magicRules: 'Hard Rules' | 'Soft Rules';
   worldBuilding: 'Expository' | 'Integrated' | 'Minimal';
+  conflictFocus: 'Internal' | 'Interpersonal' | 'Societal' | 'Elemental'; // NEW
   
-  // 5. Content & Creativity
+  // --- Safety & Creativity ---
   creativity: 'Strict' | 'Interpretive' | 'Wild';
   rating: 'G' | 'PG-13' | 'R';
 }
@@ -46,42 +62,109 @@ export interface Beat {
 }
 
 export interface Choice {
-  id: string; // 'A', 'B', 'C', 'D'
+  id: string; 
   text: string;
   rationale: string;
-  type: 'Character' | 'Subplot' | 'Theme' | 'Trope' | 'Other';
+  type: 'Character' | 'Subplot' | 'Theme' | 'Trope' | 'Other' | 'Pacing' | 'Chaos';
 }
 
 export interface Chapter {
   id: number;
   title: string;
   content: string;
-  isExpanding?: boolean;
+  status: 'completed' | 'generating' | 'pending';
+  summary?: string; // For RAG/Context
+  lastModified?: number;
+  // Versioning
+  history?: string[]; 
+  currentVersionIndex?: number;
+  pacingScore?: number; // 1-10 Tension scale
 }
 
 export interface RefinementOption {
   id: string;
   label: string;
   description: string;
-  icon: string; // Lucide icon name
+  icon: string;
+}
+
+export interface ModelConfiguration {
+  provider: 'Google';
+  analysisModel: string;
+  draftingModel: string;
+}
+
+export interface AIModel {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface LoreEntry {
+  id: string;
+  key: string; 
+  category: 'Character' | 'Location' | 'Item' | 'History';
+  description: string;
+  tags: string[];
+}
+
+export interface CharacterStatus {
+  id: string;
+  name: string;
+  status: 'Alive' | 'Dead' | 'Missing' | 'Unknown';
+  location: string;
+  goal: string;
+  inventory: string[];
+  avatarUrl?: string; 
+}
+
+export interface SessionAnalytics {
+  startTime: number;
+  wordsGenerated: number;
+  editingTimeSeconds: number;
+  sessionsCount: number;
+}
+
+export interface ProjectState {
+  metadata: NovelMetadata;
+  chapters: Chapter[];
+  lore: LoreEntry[];
+  characters: CharacterStatus[];
+  analytics: SessionAnalytics;
+  lastSaved: number;
 }
 
 export enum AppState {
   UPLOAD = 'UPLOAD',
-  DETECTING_METADATA = 'DETECTING_METADATA', // Auto-fill setup
-  SETUP = 'SETUP', // Review metadata
-  CONFIGURATION = 'CONFIGURATION', // New Phase: Fine-tuning parameters
-  GENERATING_BEATS = 'GENERATING_BEATS', // Auto-create beat sheet
-  BEAT_SHEET = 'BEAT_SHEET', // Review beat sheet
-  ANALYZING = 'ANALYZING', // Style analysis
-  PROCESSING = 'PROCESSING', // Analyzing and writing
-  REFINEMENT_SELECTION = 'REFINEMENT_SELECTION', // Choosing how to improve current chapter
-  REFINING = 'REFINING', // Applying improvements
-  DECISION = 'DECISION', // Waiting for user input
+  DETECTING_METADATA = 'DETECTING_METADATA',
+  SETUP = 'SETUP',
+  CONFIGURATION = 'CONFIGURATION',
+  GENERATING_BEATS = 'GENERATING_BEATS',
+  BEAT_SHEET = 'BEAT_SHEET',
+  ANALYZING = 'ANALYZING',
+  PROCESSING = 'PROCESSING',
+  REFINEMENT_SELECTION = 'REFINEMENT_SELECTION',
+  REFINING = 'REFINING',
+  DECISION = 'DECISION',
   FINISHED = 'FINISHED'
 }
 
 export interface GenerationResponse {
   expandedText: string;
   choices: Choice[];
+}
+
+// New Types
+export interface ChatMessage {
+    id: string;
+    sender: 'user' | 'ai';
+    text: string;
+    timestamp: number;
+}
+
+export interface CritiquePoint {
+    id: string;
+    quote: string;
+    comment: string;
+    type: 'Pacing' | 'Prose' | 'Logic' | 'Character';
 }

@@ -1,17 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Beat } from '../types';
-import { Plus, Trash2, ArrowRight, Upload, FileText, X, AlertCircle } from 'lucide-react';
+import { Plus, Trash2, ArrowRight, Upload, FileText, X, AlertCircle, CheckSquare, Layers } from 'lucide-react';
 import { readFileContent } from '../services/fileService';
 
 interface BeatSheetEditorProps {
   initialBeats: Beat[];
   onConfirm: (beats: Beat[]) => void;
+  onBatchGenerate?: (selectedBeats: Beat[]) => void; // New Prop
 }
 
-export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, onConfirm }) => {
+export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, onConfirm, onBatchGenerate }) => {
   const [beats, setBeats] = useState<Beat[]>(initialBeats);
   const [showPasteImport, setShowPasteImport] = useState(false);
   const [pasteContent, setPasteContent] = useState('');
+  const [selectedBeatIds, setSelectedBeatIds] = useState<string[]>([]);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -27,30 +31,38 @@ export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, 
   };
 
   const deleteBeat = (index: number) => {
+    const beatId = beats[index].id;
     const newBeats = beats.filter((_, i) => i !== index);
     setBeats(newBeats);
+    setSelectedBeatIds(prev => prev.filter(id => id !== beatId));
   };
 
   const addBeat = () => {
     setBeats([...beats, { id: `${beats.length + 1}`, description: '' }]);
   };
 
-  const processImportContent = (content: string) => {
-      // Basic HTML tag stripping just in case
-      const textOnly = content.replace(/<[^>]*>?/gm, '');
+  const toggleBeatSelection = (id: string) => {
+    setSelectedBeatIds(prev => 
+      prev.includes(id) ? prev.filter(bid => bid !== id) : [...prev, id]
+    );
+  };
 
-      // Heuristic parsing
-      // Split by double newline first (paragraphs)
+  const handleBatchClick = () => {
+    if (onBatchGenerate && selectedBeatIds.length > 0) {
+      const selected = beats.filter(b => selectedBeatIds.includes(b.id));
+      onBatchGenerate(selected);
+    }
+  };
+
+  const processImportContent = (content: string) => {
+      const textOnly = content.replace(/<[^>]*>?/gm, '');
       let chunks = textOnly.split(/\n\s*\n/).filter(c => c.trim().length > 0);
       
-      // If we don't get many chunks, try single newlines if the content is dense
       if (chunks.length <= 1 && textOnly.split('\n').length > 3) {
           chunks = textOnly.split('\n').filter(c => c.trim().length > 0);
       }
 
       const importedBeats: Beat[] = chunks.map((chunk, idx) => {
-          // Clean up common list markers: "1.", "1)", "-", "*"
-          // Also handle "Chapter 1:", "Beat 1:"
           const cleanText = chunk
             .replace(/^(\d+[\.\)]|\-|\*|Beat \d+:?|Chapter \d+:?|Scene \d+:?)\s*/i, '')
             .trim();
@@ -66,6 +78,7 @@ export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, 
               setBeats(importedBeats);
               setShowPasteImport(false);
               setPasteContent('');
+              setSelectedBeatIds([]);
           }
       } else {
           alert("Could not detect any beats in the text. Please ensure beats are separated by newlines.");
@@ -84,7 +97,6 @@ export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, 
           alert("Failed to read file.");
       }
       
-      // Reset input
       if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -99,8 +111,7 @@ export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, 
             <h2 className="text-4xl font-display font-bold text-stone-100 mb-3">Narrative Skeleton</h2>
             <p className="text-stone-400 font-body text-lg italic mb-6">Adjust the structural beats to guide the generation engine.</p>
             
-            {/* Import Controls */}
-            <div className="flex items-center justify-center gap-4 animate-fade-in">
+            <div className="flex flex-wrap items-center justify-center gap-4 animate-fade-in">
                 <input 
                     type="file" 
                     ref={fileInputRef}
@@ -122,10 +133,22 @@ export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, 
                     <FileText className="w-3 h-3" />
                     Paste Text
                 </button>
+                <div className="w-px h-6 bg-stone-800 mx-2 hidden md:block"></div>
+                <button 
+                    onClick={() => setIsSelectionMode(!isSelectionMode)}
+                    className={`px-4 py-2 border rounded-sm text-xs font-bold uppercase tracking-widest transition-all flex items-center gap-2 ${
+                        isSelectionMode 
+                        ? 'bg-[#d4af37]/10 border-[#d4af37] text-[#d4af37]' 
+                        : 'bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200'
+                    }`}
+                >
+                    <Layers className="w-3 h-3" />
+                    {isSelectionMode ? 'Exit Batch Mode' : 'Batch Mode'}
+                </button>
             </div>
         </div>
 
-        {/* Paste Modal / Area */}
+        {/* Paste Modal */}
         {showPasteImport && (
             <div className="mb-10 bg-stone-900 p-6 rounded-sm border border-stone-700 animate-fade-in relative shadow-xl">
                 <button onClick={() => setShowPasteImport(false)} className="absolute top-4 right-4 text-stone-500 hover:text-stone-300">
@@ -155,29 +178,50 @@ export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, 
         <div className="relative border-l-2 border-stone-800 ml-4 md:ml-0 md:border-l-0 md:space-y-6 space-y-8 pb-12">
             {/* Beat Cards */}
             {beats.map((beat, index) => (
-                <div key={index} className="group relative md:pl-0 pl-8 transition-all duration-300">
-                    {/* Number Indicator */}
-                    <div className="absolute -left-[9px] md:static md:mb-2 md:inline-block">
-                       <div className="w-4 h-4 rounded-full bg-stone-700 border-2 border-stone-950 group-hover:bg-stone-200 transition-colors md:hidden"></div>
-                    </div>
+                <div key={index} className="group relative md:pl-0 pl-8 transition-all duration-300 flex items-start gap-4">
+                    
+                    {/* Checkbox for Batch Mode */}
+                    {isSelectionMode && (
+                        <div className="pt-8">
+                             <div 
+                                onClick={() => toggleBeatSelection(beat.id)}
+                                className={`w-6 h-6 rounded-sm border cursor-pointer flex items-center justify-center transition-all ${
+                                    selectedBeatIds.includes(beat.id) 
+                                    ? 'bg-[#d4af37] border-[#d4af37] text-stone-900' 
+                                    : 'border-stone-600 hover:border-[#d4af37]'
+                                }`}
+                             >
+                                 {selectedBeatIds.includes(beat.id) && <CheckSquare className="w-4 h-4" />}
+                             </div>
+                        </div>
+                    )}
 
-                    <div className="bg-stone-900 p-6 rounded-sm shadow-sm border border-stone-800 group-hover:shadow-md group-hover:border-stone-700 transition-all duration-300 relative">
-                        <div className="absolute top-4 left-4 text-xs font-bold text-stone-600 font-mono">BEAT {String(index + 1).padStart(2, '0')}</div>
-                        
-                        <div className="pl-0 pt-6">
-                            <textarea
-                                value={beat.description}
-                                onChange={(e) => updateBeat(index, e.target.value)}
-                                placeholder="Describe the narrative action..."
-                                rows={2}
-                                className="w-full bg-transparent border-none p-0 font-body text-stone-300 text-lg leading-relaxed focus:ring-0 resize-none placeholder:text-stone-700"
-                            />
+                    <div className="flex-1">
+                        {/* Number Indicator */}
+                        <div className="absolute -left-[9px] md:static md:mb-2 md:inline-block">
+                        <div className="w-4 h-4 rounded-full bg-stone-700 border-2 border-stone-950 group-hover:bg-stone-200 transition-colors md:hidden"></div>
                         </div>
 
-                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                             <button onClick={() => deleteBeat(index)} className="p-2 text-stone-600 hover:text-red-400 transition-colors">
-                                 <Trash2 className="w-4 h-4" />
-                             </button>
+                        <div className={`bg-stone-900 p-6 rounded-sm shadow-sm border transition-all duration-300 relative ${
+                            selectedBeatIds.includes(beat.id) ? 'border-[#d4af37] shadow-lg' : 'border-stone-800 group-hover:shadow-md group-hover:border-stone-700'
+                        }`}>
+                            <div className="absolute top-4 left-4 text-xs font-bold text-stone-600 font-mono">BEAT {String(index + 1).padStart(2, '0')}</div>
+                            
+                            <div className="pl-0 pt-6">
+                                <textarea
+                                    value={beat.description}
+                                    onChange={(e) => updateBeat(index, e.target.value)}
+                                    placeholder="Describe the narrative action..."
+                                    rows={2}
+                                    className="w-full bg-transparent border-none p-0 font-body text-stone-300 text-lg leading-relaxed focus:ring-0 resize-none placeholder:text-stone-700"
+                                />
+                            </div>
+
+                            <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button onClick={() => deleteBeat(index)} className="p-2 text-stone-600 hover:text-red-400 transition-colors">
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -189,11 +233,18 @@ export const BeatSheetEditor: React.FC<BeatSheetEditorProps> = ({ initialBeats, 
             </button>
         </div>
 
-        <div className="sticky bottom-8 flex justify-center">
-            <button onClick={() => onConfirm(beats)} className="bg-stone-100 text-stone-950 px-10 py-4 rounded-full shadow-2xl hover:bg-white hover:scale-105 transition-all font-display font-bold text-lg flex items-center gap-3">
-                Confirm Structure
-                <ArrowRight className="w-5 h-5" />
-            </button>
+        <div className="sticky bottom-8 flex justify-center gap-4">
+             {isSelectionMode && selectedBeatIds.length > 0 ? (
+                 <button onClick={handleBatchClick} className="bg-[#d4af37] text-stone-900 px-10 py-4 rounded-full shadow-2xl hover:bg-[#c5a028] hover:scale-105 transition-all font-display font-bold text-lg flex items-center gap-3">
+                    <Layers className="w-5 h-5" />
+                    Generate {selectedBeatIds.length} Chapters
+                 </button>
+             ) : (
+                <button onClick={() => onConfirm(beats)} className="bg-stone-100 text-stone-950 px-10 py-4 rounded-full shadow-2xl hover:bg-white hover:scale-105 transition-all font-display font-bold text-lg flex items-center gap-3">
+                    {isSelectionMode ? 'Generate Sequentially (Standard)' : 'Confirm Structure'}
+                    <ArrowRight className="w-5 h-5" />
+                </button>
+             )}
         </div>
       </div>
     </div>
