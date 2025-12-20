@@ -34,11 +34,3 @@ export const retrieveContext = (
 
     return context;
 };
-
-// Helper to update character status based on AI output (Mock implementation for now, usually requires another AI call)
-export const parseLoreUpdates = async (chapterText: string): Promise<{ newLore: LoreEntry[], charUpdates: Partial<CharacterStatus>[] }> => {
-    // In a real implementation, this would call Gemini to extract facts.
-    // For now, we return empty to prevent halluncination loops, 
-    // but the architecture is here for the "Dynamic Lore Bible" feature.
-    return { newLore: [], charUpdates: [] };
-};

@@ -1,25 +1,31 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { GenerationConfig } from '../types';
-import { Sliders, Layers, Mic2, Globe, Shield, ArrowRight, CheckCircle2, Feather, Eye } from 'lucide-react';
+import { Sliders, Layers, Mic2, Globe, Shield, ArrowRight, CheckCircle2, Feather, Bot, RefreshCw, Database } from 'lucide-react';
 
 interface ConfigurationPanelProps {
   onConfirm: (config: GenerationConfig) => void;
+  initialConfig?: Partial<GenerationConfig>;
 }
 
 const TABS = [
+  { id: 'automation', label: 'Automation & Agentic', icon: Bot },
   { id: 'structure', label: 'Structure & Mechanics', icon: Layers },
-  { id: 'prose', label: 'Advanced Prose', icon: Feather }, // NEW
+  { id: 'prose', label: 'Advanced Prose', icon: Feather },
   { id: 'character', label: 'Character & Dialogue', icon: Mic2 },
   { id: 'atmosphere', label: 'Atmosphere & World', icon: Globe },
   { id: 'safety', label: 'Safety & Creativity', icon: Shield },
 ];
 
-export const ConfigurationPanel: React.FC<ConfigurationPanelProps> = ({ onConfirm }) => {
-  const [activeTab, setActiveTab] = useState('structure');
+export const ConfigurationPanel: React.FC<ConfigurationPanelProps> = ({ onConfirm, initialConfig }) => {
+  const [activeTab, setActiveTab] = useState('automation');
   
   const [config, setConfig] = useState<GenerationConfig>({
-    // Defaults including new fields
+    // Automation Defaults
+    autoCritique: true,
+    autoLore: true,
+
+    // Narrative Defaults
     expansionDepth: 'Scene',
     pacingSpeed: 'Balanced',
     narrativeFlow: 'Linear',
@@ -50,10 +56,19 @@ export const ConfigurationPanel: React.FC<ConfigurationPanelProps> = ({ onConfir
     worldBuilding: 'Integrated',
     
     creativity: 'Interpretive',
-    rating: 'PG-13'
-  });
+    rating: 'PG-13',
+    // Merge detected config
+    ...(initialConfig || {})
+  } as GenerationConfig);
 
-  const updateConfig = (key: keyof GenerationConfig, value: string) => {
+  // Safely merge if initialConfig updates after mount
+  useEffect(() => {
+    if (initialConfig) {
+        setConfig(prev => ({ ...prev, ...initialConfig }));
+    }
+  }, [initialConfig]);
+
+  const updateConfig = (key: keyof GenerationConfig, value: string | boolean) => {
     setConfig(prev => ({ ...prev, [key]: value }));
   };
 
@@ -82,6 +97,37 @@ export const ConfigurationPanel: React.FC<ConfigurationPanelProps> = ({ onConfir
               <p className="text-[11px] font-ui text-stone-500 leading-snug">{description}</p>
           </div>
       );
+  };
+
+  const renderToggleCard = (
+    key: keyof GenerationConfig,
+    label: string,
+    description: string,
+    icon: React.FC<any>
+  ) => {
+    const isSelected = config[key] === true;
+    const Icon = icon;
+    return (
+        <div 
+            onClick={() => updateConfig(key, !isSelected)}
+            className={`cursor-pointer border p-4 rounded-sm transition-all duration-200 relative group flex gap-4 items-start ${
+                isSelected 
+                ? 'bg-stone-800 border-[#d4af37] shadow-lg' 
+                : 'bg-stone-900 border-stone-800 hover:border-stone-600'
+            }`}
+        >
+            <div className={`p-2 rounded-full ${isSelected ? 'bg-[#d4af37] text-stone-900' : 'bg-stone-950 text-stone-500'}`}>
+                <Icon className="w-5 h-5" />
+            </div>
+            <div>
+                <div className="flex items-center gap-2 mb-1">
+                    <span className={`font-display font-bold text-lg ${isSelected ? 'text-white' : 'text-stone-400'}`}>{label}</span>
+                    {isSelected && <span className="text-[9px] bg-[#d4af37] text-stone-900 px-2 py-0.5 rounded uppercase font-bold tracking-wider">Active</span>}
+                </div>
+                <p className="text-xs text-stone-500 leading-relaxed">{description}</p>
+            </div>
+        </div>
+    );
   };
 
   return (
@@ -131,6 +177,27 @@ export const ConfigurationPanel: React.FC<ConfigurationPanelProps> = ({ onConfir
 
             {/* Content Area */}
             <div className="flex-1 overflow-y-auto p-8 bg-stone-900/30">
+
+                {/* 0. Automation & Agents */}
+                {activeTab === 'automation' && (
+                     <div className="space-y-8 animate-fade-in">
+                        <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400 mb-4 border-b border-stone-800 pb-2">Agentic Workflows</h3>
+                        <div className="grid grid-cols-1 gap-6">
+                            {renderToggleCard(
+                                'autoCritique', 
+                                'Recursive Polish Protocol', 
+                                'Enables a self-correction loop. After generating a draft, a secondary AI agent critiques it for pacing, prose, and consistency. The generator then autonomously rewrites the chapter to address these issues before you see it. Increases quality but doubles generation time.',
+                                RefreshCw
+                            )}
+                            {renderToggleCard(
+                                'autoLore', 
+                                'Dynamic Lore Syphon', 
+                                'Enables a background archivist agent. After every chapter generation, this agent scans the text for new facts (character locations, inventory changes, new world terms) and automatically updates the World Bible database without your intervention.',
+                                Database
+                            )}
+                        </div>
+                    </div>
+                )}
                 
                 {/* 1. Structure & Mechanics */}
                 {activeTab === 'structure' && (
@@ -183,7 +250,7 @@ export const ConfigurationPanel: React.FC<ConfigurationPanelProps> = ({ onConfir
                     </div>
                 )}
 
-                {/* 2. Advanced Prose (NEW TAB) */}
+                {/* 2. Advanced Prose */}
                 {activeTab === 'prose' && (
                     <div className="space-y-8 animate-fade-in">
                          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -279,7 +346,7 @@ export const ConfigurationPanel: React.FC<ConfigurationPanelProps> = ({ onConfir
                     </div>
                 )}
 
-                {/* 4. Atmosphere & World (Renamed from World) */}
+                {/* 4. Atmosphere & World */}
                 {activeTab === 'atmosphere' && (
                     <div className="space-y-8 animate-fade-in">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">

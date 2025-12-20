@@ -16,40 +16,44 @@ export interface NovelMetadata {
 }
 
 export interface GenerationConfig {
+  // --- Automation (NEW) ---
+  autoCritique: boolean; // Recursive Polish Protocol
+  autoLore: boolean; // Dynamic Lore Syphon
+
   // --- Structure & Pacing ---
   expansionDepth: 'Micro' | 'Scene' | 'Chapter';
   pacingSpeed: 'Slow Burn' | 'Balanced' | 'Fast';
   narrativeFlow: 'Linear' | 'Non-Linear' | 'Branching';
-  timeDilation: 'Real-time' | 'Compressed' | 'Expanded Moment' | 'Montage'; // NEW
-  chapterStructure: 'Classic Arc' | 'Slice of Life' | 'Vignette' | 'Cliffhanger'; // NEW
+  timeDilation: 'Real-time' | 'Compressed' | 'Expanded Moment' | 'Montage';
+  chapterStructure: 'Classic Arc' | 'Slice of Life' | 'Vignette' | 'Cliffhanger';
 
-  // --- Voice & Prose (New Section) ---
+  // --- Voice & Prose ---
   tone: 'Dark/Gritty' | 'Light/Whimsical' | 'Academic/Formal' | 'Conversational';
-  proseComplexity: 'Accessible' | 'Standard' | 'Baroque' | 'Experimental'; // NEW
-  sentenceRhythm: 'Staccato' | 'Flowing' | 'Variable' | 'Repetitive'; // NEW
-  vocabularyLevel: 'Simple' | 'College' | 'Archaic' | 'Esoteric'; // NEW
-  metaphorFrequency: 'Sparse' | 'Moderate' | 'Dense' | 'Surreal'; // NEW
+  proseComplexity: 'Accessible' | 'Standard' | 'Baroque' | 'Experimental';
+  sentenceRhythm: 'Staccato' | 'Flowing' | 'Variable' | 'Repetitive';
+  vocabularyLevel: 'Simple' | 'College' | 'Archaic' | 'Esoteric';
+  metaphorFrequency: 'Sparse' | 'Moderate' | 'Dense' | 'Surreal';
 
   // --- Narrative Mechanics ---
   pov: 'First Person' | 'Third Person Limited' | 'Third Person Omniscient' | 'Second Person';
-  tense: 'Past' | 'Present' | 'Future'; // NEW
-  narrativeDistance: 'Intimate' | 'Close' | 'Distant' | 'Cinematic'; // NEW
-  narrativeReliability: 'Reliable' | 'Unreliable' | 'Naive' | 'Deceptive'; // NEW
+  tense: 'Past' | 'Present' | 'Future';
+  narrativeDistance: 'Intimate' | 'Close' | 'Distant' | 'Cinematic';
+  narrativeReliability: 'Reliable' | 'Unreliable' | 'Naive' | 'Deceptive';
 
   // --- Immersion ---
   sensoryDensity: 'High' | 'Medium' | 'Low';
-  atmosphericFilter: 'Neutral' | 'Hopeful' | 'Oppressive' | 'Eerie' | 'Nostalgic'; // NEW
+  atmosphericFilter: 'Neutral' | 'Hopeful' | 'Oppressive' | 'Eerie' | 'Nostalgic';
 
   // --- Character & Dialogue ---
   dialogueRatio: 'Dialogue Heavy' | 'Balanced' | 'Internal Monologue';
   characterAgency: 'Passive' | 'Active';
   relationshipDynamic: 'Cooperative' | 'Conflict-Driven';
-  subtextLevel: 'On the Nose' | 'Balanced' | 'Deep Subtext' | 'Cryptic'; // NEW
+  subtextLevel: 'On the Nose' | 'Balanced' | 'Deep Subtext' | 'Cryptic';
   
   // --- World & Plot ---
   magicRules: 'Hard Rules' | 'Soft Rules';
   worldBuilding: 'Expository' | 'Integrated' | 'Minimal';
-  conflictFocus: 'Internal' | 'Interpersonal' | 'Societal' | 'Elemental'; // NEW
+  conflictFocus: 'Internal' | 'Interpersonal' | 'Societal' | 'Elemental';
   
   // --- Safety & Creativity ---
   creativity: 'Strict' | 'Interpretive' | 'Wild';

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Wand2, Scissors, Type, Trash, X, Eraser, History, Undo } from 'lucide-react';
+import { Wand2, Scissors, Type, Trash, X, Eraser, History, Undo, Eye } from 'lucide-react';
 import { magicRefineSelection, magicEraser } from '../services/geminiService';
 
 interface ChapterEditorProps {
@@ -20,7 +20,9 @@ export const ChapterEditor: React.FC<ChapterEditorProps> = ({ content, history =
   
   // Version History State
   const [versionIndex, setVersionIndex] = useState(history.length > 0 ? history.length - 1 : 0);
-  const [showHistory, setShowHistory] = useState(false);
+
+  // Track if user is currently typing to avoid aggressive overwrites
+  const isTypingRef = useRef(false);
 
   useEffect(() => {
       // Sync local version index if history grows externally
@@ -32,7 +34,15 @@ export const ChapterEditor: React.FC<ChapterEditorProps> = ({ content, history =
   // Sync content only when it changes externally effectively
   useEffect(() => {
     if (editorRef.current && content !== editorRef.current.innerText) {
-       if (Math.abs(content.length - editorRef.current.innerText.length) > 5) {
+       // Only update if the content is significantly different OR we aren't actively typing
+       // This prevents cursor jumps during rapid updates but allows external changes (like magic edit) to take effect
+       if (!isTypingRef.current || Math.abs(content.length - editorRef.current.innerText.length) > 5) {
+           const selection = window.getSelection();
+           const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+           const preCaretRange = range ? range.cloneRange() : null;
+           
+           // Simple cursor preservation attempt (naive but better than nothing)
+           // ideally we would use offset counting
            editorRef.current.innerText = content;
        }
     }
@@ -56,8 +66,14 @@ export const ChapterEditor: React.FC<ChapterEditorProps> = ({ content, history =
   };
 
   const handleInput = (e: React.FormEvent<HTMLDivElement>) => {
+      isTypingRef.current = true;
       const text = e.currentTarget.innerText;
       onChange(text);
+      
+      // Reset typing flag after a short delay
+      setTimeout(() => {
+          isTypingRef.current = false;
+      }, 500);
   };
 
   const pushToHistory = (newText: string) => {
@@ -175,4 +191,3 @@ export const ChapterEditor: React.FC<ChapterEditorProps> = ({ content, history =
     </>
   );
 };
-import { Eye } from 'lucide-react';

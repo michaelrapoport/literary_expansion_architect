@@ -14,10 +14,10 @@ import { QuickChat } from './components/QuickChat';
 import { ExportPreviewModal } from './components/ExportPreviewModal';
 import { AppState, Chapter, Choice, NovelMetadata, Beat, GenerationConfig, ModelConfiguration, LoreEntry, CharacterStatus, SessionAnalytics } from './types';
 import { splitIntoSourceChunks } from './services/fileService';
-import { generateSetup, generateNextChapter, analyzeStyle, extractMetadata, generateBeatSheet, refineChapter, generateChapterFromBeat, generateChaosTwist } from './services/geminiService';
+import { generateSetup, generateNextChapter, analyzeStyle, extractMetadata, generateBeatSheet, refineChapter, generateChapterFromBeat, generateChaosTwist, generateCritique, extractLoreUpdates, checkBeatConsistency } from './services/geminiService';
 import { saveProject, loadProject, exportProjectToJson, exportProjectToDocxHtml } from './services/persistenceService';
 import { retrieveContext } from './services/knowledgeService';
-import { Loader2, ScanSearch, Wand2, FileSearch, BookOpen, AlignLeft, Bot, Search, ArrowUp, ArrowDown, MoreHorizontal } from 'lucide-react';
+import { Loader2, ScanSearch, Wand2, FileSearch, BookOpen, AlignLeft, Bot, Search, ArrowUp, ArrowDown, MoreHorizontal, RefreshCw, Layers } from 'lucide-react';
 import { GenerateContentResponse } from '@google/genai';
 import { REFINEMENT_OPTIONS, DEFAULT_MODEL_CONFIG } from './constants';
 
@@ -53,13 +53,19 @@ const App: React.FC = () => {
 
   // Stream & UI
   const [currentStreamingContent, setCurrentStreamingContent] = useState('');
+  const [generationStatus, setGenerationStatus] = useState<string>(''); // NEW: For "Critiquing...", "Lore Update..." status
   const [currentChoices, setCurrentChoices] = useState<Choice[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   
-  // AutoPilot State (Using Ref for reliable async loop access)
+  // Batch & AutoPilot State
   const autoPilotRef = useRef(0);
   const [autoPilotRemaining, setAutoPilotRemaining] = useState(0); 
   const [consecutiveHighEnergy, setConsecutiveHighEnergy] = useState(0); 
+
+  // Batch Processing State (NEW)
+  const [isBatchProcessing, setIsBatchProcessing] = useState(false);
+  const [batchQueue, setBatchQueue] = useState<Beat[]>([]);
+  const [batchProgress, setBatchProgress] = useState(0);
 
   const novelEndRef = useRef<HTMLDivElement>(null);
   const analyticsInterval = useRef<any>(null);
@@ -126,7 +132,7 @@ const App: React.FC = () => {
   const handleFindReplace = (findText: string, replaceText: string) => {
       const newChapters = chapters.map(c => ({
           ...c,
-          content: c.content.replaceAll(findText, replaceText)
+          content: c.content.split(findText).join(replaceText)
       }));
       setChapters(newChapters);
       alert(`Replaced instances of "${findText}" with "${replaceText}".`);
@@ -222,6 +228,88 @@ const App: React.FC = () => {
       }
   };
 
+  // --- BATCH GENERATION LOGIC ---
+  const handleBatchGenerate = async (selectedBeats: Beat[]) => {
+      if (selectedBeats.length === 0 || !metadata) return;
+      
+      setIsBatchProcessing(true);
+      setBatchQueue(selectedBeats);
+      setBatchProgress(0);
+      setAppState(AppState.PROCESSING); // Move to main view
+      
+      for (let i = 0; i < selectedBeats.length; i++) {
+          const beat = selectedBeats[i];
+          setGenerationStatus(`Batching: Beat ${i + 1}/${selectedBeats.length}`);
+          
+          // 1. Narrative Unit Test (Consistency Guard)
+          try {
+              const consistency = await checkBeatConsistency(beat, lore, characters, modelConfig.analysisModel);
+              if (!consistency.safe) {
+                   const proceed = window.confirm(`Consistency Warning for Beat "${beat.description}":\n${consistency.issues.join('\n')}\n\nProceed anyway?`);
+                   if (!proceed) {
+                       setIsBatchProcessing(false);
+                       alert("Batch generation paused by user.");
+                       return;
+                   }
+              }
+          } catch(e) { console.warn("Consistency check skipped due to error"); }
+
+          // 2. Generate Chapter
+          setIsGenerating(true);
+          setCurrentStreamingContent('');
+          const storyHistory = chapters.map(c => c.content).join('\n\n');
+          
+          // For Batch, we use 'generateChapterFromBeat' but we need to pass previous beats if available
+          const beatIndex = beatSheet.findIndex(b => b.id === beat.id);
+          const prevBeats = beatIndex > 0 ? beatSheet.slice(0, beatIndex) : [];
+          
+          try {
+              const streamResult = await generateChapterFromBeat(metadata, beat, prevBeats, storyHistory, modelConfig.draftingModel);
+              
+              let fullText = "";
+              for await (const chunk of streamResult) {
+                  if (chunk.text) {
+                      const clean = stripHtml(chunk.text);
+                      fullText += clean;
+                      setCurrentStreamingContent(fullText);
+                  }
+              }
+              
+              // 3. Commit Chapter
+              const newChapter: Chapter = {
+                  id: chapters.length + 1 + i, // Rough ID
+                  title: `Chapter ${chapters.length + 1} (Beat ${beat.id})`,
+                  content: fullText,
+                  status: 'completed',
+                  lastModified: Date.now(),
+                  history: [fullText],
+                  pacingScore: 5 // Default for batch
+              };
+              
+              setChapters(prev => [...prev, newChapter]);
+              setBatchProgress(i + 1);
+              
+              // 4. Update Lore (Auto-Lore runs in background per chapter)
+               if (metadata.config?.autoLore) {
+                   extractLoreUpdates(fullText, modelConfig.analysisModel).then(updates => {
+                       // Lore updates in background
+                   });
+               }
+
+          } catch (e) {
+              console.error("Batch Error", e);
+              setIsBatchProcessing(false);
+              break;
+          }
+          
+          setIsGenerating(false);
+      }
+      
+      setIsBatchProcessing(false);
+      setGenerationStatus('');
+      setAppState(AppState.DECISION); // Finished
+  };
+
   // --- GENERATION LOGIC ---
 
   const processGeminiLoop = async (
@@ -233,6 +321,7 @@ const App: React.FC = () => {
     customInstr: string = ''
   ) => {
     setIsGenerating(true);
+    setGenerationStatus('Generating Draft...');
     setCurrentStreamingContent('');
     
     const fullStoryHistory = chapters.map(c => c.content).join('\n\n');
@@ -248,6 +337,7 @@ const App: React.FC = () => {
     }
 
     try {
+      // 1. DRAFTING PHASE
       let streamResult: AsyncIterable<GenerateContentResponse>;
       
       if (isFirst) {
@@ -269,6 +359,7 @@ const App: React.FC = () => {
          }
       }
 
+      // 2. PARSE OUTPUT
       let storyPart = fullResponseText;
       let jsonPart = '';
       const splitIndex = fullResponseText.indexOf(splitMarker);
@@ -276,14 +367,79 @@ const App: React.FC = () => {
           storyPart = fullResponseText.substring(0, splitIndex);
           jsonPart = fullResponseText.substring(splitIndex + splitMarker.length);
       } else {
-           const jsonMatch = fullResponseText.match(/\[\s*\{\s*"id"\s*:/);
-           if (jsonMatch && jsonMatch.index !== undefined) {
+           // Fallback regex attempt if separator missing (legacy fallback)
+           const jsonMatch = fullResponseText.match(/\[\s*\{\s*"id"\s*:/); // Array check
+           if (!jsonMatch) {
+                const objectMatch = fullResponseText.match(/\{\s*"pacingScore"/); // Object check
+                if (objectMatch && objectMatch.index !== undefined) {
+                    storyPart = fullResponseText.substring(0, objectMatch.index);
+                    jsonPart = fullResponseText.substring(objectMatch.index);
+                }
+           } else if (jsonMatch.index !== undefined) {
                storyPart = fullResponseText.substring(0, jsonMatch.index);
                jsonPart = fullResponseText.substring(jsonMatch.index);
            }
       }
       
-      const finalStoryContent = storyPart.trim();
+      let finalStoryContent = storyPart.trim();
+      let historyVersion = [finalStoryContent];
+
+      // 3. RECURSIVE POLISH PROTOCOL (Auto-Critique)
+      if (meta.config?.autoCritique && !isFirst) {
+          setGenerationStatus('Running Editorial Critique...');
+          try {
+              const critiquePoints = await generateCritique(finalStoryContent, modelConfig.analysisModel);
+              if (critiquePoints.length > 0) {
+                  setGenerationStatus('Applying Automated Polish...');
+                  
+                  const instructions = "Fix these specific issues: " + critiquePoints.map(c => c.comment).join(' ');
+                  const styleDNA = meta.styleAnalysis || "";
+                  
+                  // Run refinement
+                  const refinedStream = await refineChapter(finalStoryContent, instructions, styleDNA, enrichedHistory, modelConfig.draftingModel);
+                  let refinedText = "";
+                  for await (const chunk of refinedStream) {
+                      if (chunk.text) {
+                          refinedText += stripHtml(chunk.text);
+                          setCurrentStreamingContent(refinedText); // Update UI to show polish happening
+                      }
+                  }
+                  
+                  if (refinedText.length > 100) { // Safety check
+                      finalStoryContent = refinedText.trim();
+                      historyVersion.push(finalStoryContent);
+                  }
+              }
+          } catch (e) {
+              console.warn("Auto-critique failed, using draft.");
+          }
+      }
+
+      // 4. PARSE JSON & COMMIT CHAPTER
+      let nextChoices: Choice[] = [];
+      let parsedPacing = 5;
+
+      if (jsonPart) {
+          try {
+              const cleanJson = jsonPart.replace(/```json/g, '').replace(/```/g, '').trim();
+              const parsed = JSON.parse(cleanJson);
+              
+              if (Array.isArray(parsed)) {
+                  // Legacy/Fallback format (just choices array)
+                  nextChoices = parsed;
+              } else if (parsed && typeof parsed === 'object') {
+                  // New format { pacingScore, choices }
+                  nextChoices = parsed.choices || [];
+                  if (parsed.pacingScore) parsedPacing = parsed.pacingScore;
+              }
+          } catch (e) { 
+              console.error("JSON Parsing Error", e);
+              nextChoices = [{ id: 'A', text: 'Continue', rationale: 'Parse Error', type: 'Other' }]; 
+          }
+      } else { 
+          nextChoices = [{ id: 'A', text: 'Continue', rationale: 'Auto', type: 'Other' }]; 
+      }
+
       const newWords = countWords(finalStoryContent);
       setAnalytics(prev => ({ ...prev, wordsGenerated: prev.wordsGenerated + newWords }));
 
@@ -293,23 +449,60 @@ const App: React.FC = () => {
           content: finalStoryContent,
           status: 'completed',
           lastModified: Date.now(),
-          history: [finalStoryContent],
-          currentVersionIndex: 0,
-          pacingScore: Math.floor(Math.random() * 8) + 2
+          history: historyVersion,
+          currentVersionIndex: historyVersion.length - 1,
+          pacingScore: parsedPacing
       };
       setChapters(prev => [...prev, newChapter]);
 
       setCurrentStreamingContent('');
+      setGenerationStatus('');
+
+      // 5. DYNAMIC LORE SYPHON (Auto-Lore)
+      if (meta.config?.autoLore) {
+          // Fire and forget - don't await this blocking the UI
+          extractLoreUpdates(finalStoryContent, modelConfig.analysisModel).then((updates) => {
+             if (updates) {
+                 if (updates.lore && updates.lore.length > 0) {
+                     setLore(prev => {
+                         const existingKeys = new Set(prev.map(l => l.key.toLowerCase()));
+                         const newEntries = updates.lore.filter((l: any) => !existingKeys.has(l.key.toLowerCase())).map((l: any, idx: number) => ({
+                             id: `auto-${Date.now()}-${idx}`,
+                             key: l.key,
+                             category: l.category || 'General',
+                             description: l.description,
+                             tags: []
+                         }));
+                         return [...prev, ...newEntries];
+                     });
+                 }
+                 if (updates.characters && updates.characters.length > 0) {
+                     setCharacters(prev => {
+                         const copy = [...prev];
+                         updates.characters.forEach((u: any) => {
+                             const idx = copy.findIndex(c => c.name.toLowerCase() === u.name.toLowerCase());
+                             if (idx >= 0) {
+                                 copy[idx] = { ...copy[idx], location: u.location || copy[idx].location, goal: u.goal || copy[idx].goal, status: u.status || copy[idx].status };
+                                 if (u.inventory) copy[idx].inventory = [...new Set([...copy[idx].inventory, ...u.inventory])];
+                             } else {
+                                 copy.push({
+                                     id: `auto-char-${Date.now()}`,
+                                     name: u.name,
+                                     status: u.status || 'Alive',
+                                     location: u.location || 'Unknown',
+                                     goal: u.goal || 'Unknown',
+                                     inventory: u.inventory || []
+                                 });
+                             }
+                         });
+                         return copy;
+                     });
+                 }
+             }
+          });
+      }
       
-      let nextChoices: Choice[] = [];
-      if (jsonPart) {
-          try {
-              const cleanJson = jsonPart.replace(/```json/g, '').replace(/```/g, '').trim();
-              nextChoices = JSON.parse(cleanJson);
-          } catch (e) { nextChoices = [{ id: 'A', text: 'Continue', rationale: 'Parse Error', type: 'Other' }]; }
-      } else { nextChoices = [{ id: 'A', text: 'Continue', rationale: 'Auto', type: 'Other' }]; }
-      
-      // Pacing Injection
+      // 6. Pacing Injection Logic
       let pacingCount = consecutiveHighEnergy;
       if (currentPacing === 'Fast' || currentPacing === 'Balanced') pacingCount++;
       else pacingCount = 0;
@@ -347,6 +540,7 @@ const App: React.FC = () => {
         setAppState(AppState.DECISION); 
     } finally {
         setIsGenerating(false);
+        setGenerationStatus('');
     }
   };
 
@@ -367,6 +561,14 @@ const App: React.FC = () => {
   };
   const handleBeatGen = async () => {
        if(!metadata) return;
+       
+       // Optimization: If beats were already detected by the Smart Scan in the Setup Phase, use them.
+       if (metadata.beatSheet && metadata.beatSheet.length > 0) {
+           setBeatSheet(metadata.beatSheet);
+           setAppState(AppState.BEAT_SHEET);
+           return;
+       }
+
        try {
         const fullText = sourceChunks.join('\n\n');
         const beats = await generateBeatSheet(fullText, metadata, modelConfig.analysisModel);
@@ -463,11 +665,17 @@ const App: React.FC = () => {
       />
 
       {(appState === AppState.UPLOAD || appState === AppState.DETECTING_METADATA || appState === AppState.SETUP || appState === AppState.CONFIGURATION || appState === AppState.GENERATING_BEATS || appState === AppState.BEAT_SHEET || appState === AppState.ANALYZING) ? (
-          <div className="w-full h-full flex flex-col">
+          <div className="w-full h-full flex flex-col flex-1 min-h-0 overflow-hidden">
              {appState === AppState.UPLOAD && <FileUploader onFileLoaded={handleFileLoaded} />}
-             {appState === AppState.SETUP && <SetupForm initialData={autoFilledMetadata} onSubmit={handleMetadataSubmit} />}
-             {appState === AppState.CONFIGURATION && <ConfigurationPanel onConfirm={handleConfigurationSubmit} />}
-             {appState === AppState.BEAT_SHEET && <BeatSheetEditor initialBeats={beatSheet} onConfirm={handleBeatSheetConfirm} />}
+             {appState === AppState.SETUP && <SetupForm initialData={autoFilledMetadata} onSubmit={handleMetadataSubmit} fullText={sourceChunks.join('\n\n')} />}
+             {appState === AppState.CONFIGURATION && <ConfigurationPanel onConfirm={handleConfigurationSubmit} initialConfig={autoFilledMetadata.config} />}
+             {appState === AppState.BEAT_SHEET && 
+                <BeatSheetEditor 
+                    initialBeats={beatSheet} 
+                    onConfirm={handleBeatSheetConfirm} 
+                    onBatchGenerate={handleBatchGenerate}
+                />
+             }
              {(appState === AppState.DETECTING_METADATA || appState === AppState.GENERATING_BEATS || appState === AppState.ANALYZING) && (
                  <div className="flex flex-col items-center justify-center h-full text-stone-400">
                      <Loader2 className="w-10 h-10 animate-spin mb-4" />
@@ -530,8 +738,32 @@ const App: React.FC = () => {
                     
                     {isGenerating && (
                         <div className="animate-fade-in pb-20 pt-10">
+                             {/* GENERATION STATUS INDICATOR (NEW) */}
+                            {generationStatus && (
+                                <div className="flex items-center gap-3 text-[#d4af37] mb-4 bg-[#d4af37]/10 p-3 rounded-sm border border-[#d4af37]/30 max-w-fit animate-fade-in">
+                                    <RefreshCw className="w-4 h-4 animate-spin" />
+                                    <span className="text-xs font-bold uppercase tracking-widest">{generationStatus}</span>
+                                </div>
+                            )}
+
                             <div className="font-body leading-[2.1] text-[1.15rem] text-stone-300 text-justify animate-pulse opacity-80 whitespace-pre-wrap">
                                 {currentStreamingContent}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* BATCH PROGRESS BAR OVERLAY */}
+                    {isBatchProcessing && (
+                        <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-stone-900 border border-[#d4af37] shadow-2xl p-4 rounded-sm z-50 flex flex-col items-center gap-2 w-96 animate-fade-in">
+                            <div className="flex justify-between w-full text-[10px] font-bold uppercase tracking-widest text-[#d4af37]">
+                                <span>Batch Generation Active</span>
+                                <span>{batchProgress} / {batchQueue.length}</span>
+                            </div>
+                            <div className="w-full h-1 bg-stone-800 rounded-full overflow-hidden">
+                                <div 
+                                    className="h-full bg-[#d4af37] transition-all duration-500"
+                                    style={{ width: `${(batchProgress / batchQueue.length) * 100}%` }}
+                                ></div>
                             </div>
                         </div>
                     )}

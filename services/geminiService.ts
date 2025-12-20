@@ -1,7 +1,7 @@
 
 import { GoogleGenAI, GenerateContentResponse, Schema, Type } from "@google/genai";
 import { LEA_SYSTEM_PROMPT, STYLE_ANALYSIS_PROMPT, REFINEMENT_PROMPT_TEMPLATE } from "../constants";
-import { NovelMetadata, Beat, GenerationConfig, Choice, CritiquePoint } from "../types";
+import { NovelMetadata, Beat, GenerationConfig, Choice, CritiquePoint, LoreEntry, CharacterStatus } from "../types";
 
 let client: GoogleGenAI | null = null;
 
@@ -80,14 +80,117 @@ const formatConfigForPrompt = (config?: GenerationConfig): string => {
 
 export const extractMetadata = async (textSample: string, model: string): Promise<Partial<NovelMetadata>> => {
   const ai = getClient();
-  const prompt = `Analyze metadata (Title, Author, Genre, Synopsis, Themes, Character Arcs, Style) from: "${textSample.slice(0, 150000)}..."`;
+  const prompt = `
+    Analyze the following novel text and extract structured metadata to populate a writing planning form.
+    
+    1. Extract Basic Metadata:
+    - title (if apparent), author (if apparent), genre, synopsis (1 paragraph), themes (comma list), characterArcs (brief), styleGoals (analysis).
+
+    2. Extract Configuration Parameters (Select the closest fit from options):
+    - tone: 'Dark/Gritty', 'Light/Whimsical', 'Academic/Formal', 'Conversational'
+    - pov: 'First Person', 'Third Person Limited', 'Third Person Omniscient', 'Second Person'
+    - tense: 'Past', 'Present', 'Future'
+    - proseComplexity: 'Accessible', 'Standard', 'Baroque', 'Experimental'
+    - pacingSpeed: 'Slow Burn', 'Balanced', 'Fast'
+    
+    Text Sample:
+    "${textSample.slice(0, 50000)}..."
+  `;
   try {
     const response = await retry<GenerateContentResponse>(() => ai.models.generateContent({
       model: model, contents: prompt,
-      config: { responseMimeType: 'application/json', responseSchema: { type: Type.OBJECT, properties: { title: {type:Type.STRING}, author: {type:Type.STRING}, genre: {type:Type.STRING}, synopsis: {type:Type.STRING}, themes: {type:Type.STRING}, characterArcs: {type:Type.STRING}, styleGoals: {type:Type.STRING} } } }
+      config: { 
+        responseMimeType: 'application/json', 
+        responseSchema: { 
+            type: Type.OBJECT, 
+            properties: { 
+                title: {type:Type.STRING}, 
+                author: {type:Type.STRING}, 
+                genre: {type:Type.STRING}, 
+                synopsis: {type:Type.STRING}, 
+                themes: {type:Type.STRING}, 
+                characterArcs: {type:Type.STRING}, 
+                styleGoals: {type:Type.STRING},
+                config: {
+                    type: Type.OBJECT,
+                    properties: {
+                        tone: {type: Type.STRING},
+                        pov: {type: Type.STRING},
+                        tense: {type: Type.STRING},
+                        proseComplexity: {type: Type.STRING},
+                        pacingSpeed: {type: Type.STRING}
+                    }
+                }
+            } 
+        } 
+      }
     }));
     return response.text ? JSON.parse(response.text) : {};
   } catch (e) { return {}; }
+};
+
+export const generateBlueprint = async (fullText: string): Promise<Partial<NovelMetadata>> => {
+  const ai = getClient();
+  // Using gemini-3-pro-preview as the high-reasoning "Pro" agent
+  const model = 'gemini-3-pro-preview'; 
+  
+  const prompt = `
+    You are a professional literary agent and editor. 
+    Analyze the uploaded manuscript to create a comprehensive "Novel Blueprint" JSON.
+    
+    Tasks:
+    1. Determine the Title and Author (if present).
+    2. Write a compelling Synopsis (100-150 words).
+    3. Identify the Genre (be specific, e.g., "Cyberpunk Noir").
+    4. List Core Themes (comma separated).
+    5. Describe the major Character Arcs.
+    6. Analyze the Style Goals (what makes this writing unique?).
+    7. Suggest Tone/Comedy adjustments.
+    8. Estimate ideal min/max word counts for chapters based on the pacing.
+    9. EXTRACT THE NARRATIVE SKELETON (Beat Sheet): Identify the key existing plot points/chapters from the text as a list of beats.
+
+    Manuscript Excerpt:
+    "${fullText.slice(0, 100000)}..."
+  `;
+
+  try {
+    const response = await retry<GenerateContentResponse>(() => ai.models.generateContent({
+      model: model,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            author: { type: Type.STRING },
+            genre: { type: Type.STRING },
+            synopsis: { type: Type.STRING },
+            themes: { type: Type.STRING },
+            characterArcs: { type: Type.STRING },
+            styleGoals: { type: Type.STRING },
+            comedy: { type: Type.STRING },
+            minWordCount: { type: Type.INTEGER },
+            maxWordCount: { type: Type.INTEGER },
+            beatSheet: { 
+                type: Type.ARRAY, 
+                items: { 
+                    type: Type.OBJECT, 
+                    properties: { 
+                        id: { type: Type.STRING }, 
+                        description: { type: Type.STRING } 
+                    } 
+                } 
+            }
+          }
+        }
+      }
+    }));
+    return response.text ? JSON.parse(response.text) : {};
+  } catch (e) {
+    console.error("Blueprint generation failed", e);
+    return {};
+  }
 };
 
 export const generateBeatSheet = async (textSample: string, metadata: NovelMetadata, model: string): Promise<Beat[]> => {
@@ -117,7 +220,7 @@ export const generateSetup = async (metadata: NovelMetadata, firstChunk: string,
   const ai = getClient();
   const beatSheetText = metadata.beatSheet ? metadata.beatSheet.map(b => `[${b.id}] ${b.description}`).join('\n') : "";
   const configPrompt = formatConfigForPrompt(metadata.config);
-  const prompt = `Phase 1 Setup. Meta: ${JSON.stringify(metadata)}. ${configPrompt}\nBeats:\n${beatSheetText}\nStyle:\n${metadata.styleAnalysis}\nSource:\n"${firstChunk}"\nOutput expanded text then |||STRATEGIC_SPLIT||| then JSON choices.`;
+  const prompt = `Phase 1 Setup. Meta: ${JSON.stringify(metadata)}. ${configPrompt}\nBeats:\n${beatSheetText}\nStyle:\n${metadata.styleAnalysis}\nSource:\n"${firstChunk}"\nOutput expanded text then |||STRATEGIC_SPLIT||| then JSON object with keys: "pacingScore" (1-10) and "choices" (array of 4 objects).`;
   return await retry(async () => {
     return await ai.models.generateContentStream({ model: model, contents: prompt, config: { systemInstruction: LEA_SYSTEM_PROMPT, temperature: 0.8 } });
   });
@@ -127,16 +230,35 @@ export const generateNextChapter = async (metadata: NovelMetadata, storyHistory:
   const ai = getClient();
   const structureInstruction = isNewChapter ? "START A NEW CHAPTER." : "CONTINUE THE CURRENT CHAPTER.";
   const managedContext = manageContextWindow(storyHistory);
-  const prompt = `CONTINUATION. ${structureInstruction} ${formatConfigForPrompt(metadata.config)}\nStyle: ${metadata.styleAnalysis}\nContext: "${managedContext}"\nUser: ${userChoice} ${customInstructions}\nSource: "${nextChunk}"\nOutput expanded text then |||STRATEGIC_SPLIT||| then JSON choices.`;
+  const prompt = `CONTINUATION. ${structureInstruction} ${formatConfigForPrompt(metadata.config)}\nStyle: ${metadata.styleAnalysis}\nContext: "${managedContext}"\nUser: ${userChoice} ${customInstructions}\nSource: "${nextChunk}"\nOutput expanded text then |||STRATEGIC_SPLIT||| then JSON object with keys: "pacingScore" (1-10) and "choices" (array of 4 objects).`;
   return await retry(async () => {
     return await ai.models.generateContentStream({ model: model, contents: prompt, config: { systemInstruction: LEA_SYSTEM_PROMPT, temperature: 0.8 } });
   });
 };
 
-export const generateChapterFromBeat = async (metadata: NovelMetadata, targetBeat: Beat, previousBeats: Beat[], model: string): Promise<AsyncIterable<GenerateContentResponse>> => {
+export const generateChapterFromBeat = async (metadata: NovelMetadata, targetBeat: Beat, previousBeats: Beat[], storyHistory: string, model: string): Promise<AsyncIterable<GenerateContentResponse>> => {
     const ai = getClient();
-    const previousContext = previousBeats.map(b => `[Beat ${b.id}] ${b.description}`).join('\n');
-    const prompt = `PARALLEL EXPANSION. Style: ${metadata.styleAnalysis}\nContext Beats: ${previousContext}\nTarget Beat: ${targetBeat.description}\nWrite chapter prose. No JSON.`;
+    const managedContext = manageContextWindow(storyHistory);
+    const beatContext = previousBeats.slice(-5).map(b => `[Beat ${b.id}] ${b.description}`).join('\n'); // Last 5 beats
+    
+    const prompt = `
+        BATCH PROCESSING - GHOSTWRITER MODE.
+        
+        Metadata: ${JSON.stringify(metadata.config)}
+        Style DNA: ${metadata.styleAnalysis}
+        
+        Previous Context: "${managedContext.slice(-5000)}"
+        Recent Beats:
+        ${beatContext}
+        
+        TARGET BEAT TO EXPAND:
+        "${targetBeat.description}"
+        
+        Task: Write the complete chapter corresponding to the Target Beat. 
+        Maintain strict continuity with Previous Context.
+        No JSON output. Just prose.
+    `;
+
     return await retry(async () => {
         return await ai.models.generateContentStream({ model: model, contents: prompt, config: { systemInstruction: LEA_SYSTEM_PROMPT, temperature: 0.8 } });
     });
@@ -185,11 +307,16 @@ export const extractLoreUpdates = async (text: string, model: string): Promise<a
     const ai = getClient();
     const prompt = `
         Read the following story segment and extract any NEW significant facts for a "World Bible".
-        Focus on:
-        1. Character status changes (Location, Health, Items).
-        2. New Lore terms (Locations, History, Magic Items).
         
-        Return JSON: { "lore": [{ "key": "...", "category": "...", "description": "..." }], "characters": [{ "name": "...", "statusUpdate": "..." }] }
+        Tasks:
+        1. Identify new facts about Locations, History, or Magic.
+        2. Identify updates to Character status (Where are they? How are they feeling? What items do they have?).
+
+        Return JSON format: 
+        { 
+            "lore": [{ "key": "Name of Place/Item", "category": "Location/Item/History", "description": "1 sentence fact" }], 
+            "characters": [{ "name": "Exact Name", "location": "Current Location", "goal": "Current Goal", "inventory": ["Item 1"], "status": "Alive/Dead/Injured" }] 
+        }
         
         Text: "${text.slice(0, 50000)}"
     `;
@@ -299,3 +426,42 @@ export const magicEraser = async (
     }));
     return response.text?.trim() || "";
 }
+
+// --- NEW METHOD: NARRATIVE UNIT TEST ---
+export const checkBeatConsistency = async (
+  beat: Beat, 
+  lore: LoreEntry[], 
+  characters: CharacterStatus[], 
+  model: string
+): Promise<{ safe: boolean; issues: string[] }> => {
+  const ai = getClient();
+  const loreContext = lore.map(l => `${l.key} (${l.category}): ${l.description}`).join('\n');
+  const charContext = characters.map(c => `${c.name}: ${c.status} at ${c.location}`).join('\n');
+
+  const prompt = `
+    NARRATIVE UNIT TEST (CONSISTENCY CHECK).
+    
+    World Data:
+    ${loreContext}
+    
+    Character States:
+    ${charContext}
+    
+    Proposed Plot Beat:
+    "${beat.description}"
+    
+    Task: Check if the Proposed Plot Beat contradicts any World Data or Character States (e.g., using a dead character, teleporting without travel, using lost item).
+    
+    Return JSON: { "safe": boolean, "issues": ["Issue 1", "Issue 2"] }
+    If no issues, "safe": true, "issues": [].
+  `;
+  
+  try {
+      const response = await retry<GenerateContentResponse>(() => ai.models.generateContent({
+        model: model, contents: prompt, config: { responseMimeType: 'application/json' }
+      }));
+      return JSON.parse(response.text || '{"safe": true, "issues": []}');
+  } catch (e) {
+      return { safe: true, issues: [] };
+  }
+};
