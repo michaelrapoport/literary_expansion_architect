@@ -31,7 +31,7 @@ const retry = async <T>(fn: () => Promise<T>, retries = 3, delayMs = 2000): Prom
   }
 };
 
-const MAX_CONTEXT_CHARS = 800000;
+const MAX_CONTEXT_CHARS = 1000000; // Increased context for general sliding windows
 
 const cleanHtml = (text: string): string => {
   let cleaned = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
@@ -131,9 +131,12 @@ export const extractMetadata = async (textSample: string, model: string): Promis
 
 export const generateBlueprint = async (fullText: string): Promise<Partial<NovelMetadata>> => {
   const ai = getClient();
-  // Using gemini-3-pro-preview as the high-reasoning "Pro" agent
+  // Using gemini-3-pro-preview as the high-reasoning "Pro" agent for deep analysis
   const model = 'gemini-3-pro-preview'; 
   
+  // Updated to 2 Million characters to ensure full novels are read (approx 400k words)
+  const context = fullText.slice(0, 2000000);
+
   const prompt = `
     You are a professional literary agent and editor. 
     Analyze the uploaded manuscript to create a comprehensive "Novel Blueprint" JSON.
@@ -147,10 +150,16 @@ export const generateBlueprint = async (fullText: string): Promise<Partial<Novel
     6. Analyze the Style Goals (what makes this writing unique?).
     7. Suggest Tone/Comedy adjustments.
     8. Estimate ideal min/max word counts for chapters based on the pacing.
-    9. EXTRACT THE NARRATIVE SKELETON (Beat Sheet): Identify the key existing plot points/chapters from the text as a list of beats.
+    
+    9. EXTRACT THE NARRATIVE SKELETON (Beat Sheet): 
+       CRITICAL: You must extract EVERY existing chapter or major scene from the text provided. 
+       - Do not summarize the whole book into 3 beats. 
+       - If there are 20 chapters, list 20 beats.
+       - If the text is a complete novel, list all chapters sequentially.
+       - Describe exactly what happens in that chapter for the 'description'.
 
-    Manuscript Excerpt:
-    "${fullText.slice(0, 100000)}..."
+    Manuscript:
+    "${context}..."
   `;
 
   try {
@@ -195,8 +204,20 @@ export const generateBlueprint = async (fullText: string): Promise<Partial<Novel
 
 export const generateBeatSheet = async (textSample: string, metadata: NovelMetadata, model: string): Promise<Beat[]> => {
   const ai = getClient();
-  const contextText = textSample.slice(0, 1500000); 
-  const prompt = `Generate structural Beat Sheet (JSON array of {id, description}) for: Title: ${metadata.title}\n"${contextText}"`;
+  const contextText = textSample.slice(0, 2000000); 
+  const prompt = `
+    Analyze the provided manuscript and generate a structural Beat Sheet (JSON array).
+    
+    CRITICAL INSTRUCTION:
+    - You must identify and list EVERY distinct chapter or major narrative beat present in the text.
+    - Do not summarize the entire story into a few generic beats.
+    - If the text contains Chapter 1 through Chapter X, output a beat for each one with its specific events.
+    - Ensure the list covers the ENTIRE length of the provided text.
+    
+    Title: ${metadata.title}
+    Text:
+    "${contextText}"
+  `;
   try {
     const response = await retry<GenerateContentResponse>(() => ai.models.generateContent({
       model: model, contents: prompt,
@@ -365,7 +386,7 @@ export const generateChaosTwist = async (
 export const chatWithStory = async (
     query: string, 
     context: string, 
-    loreContext: string,
+    loreContext: string, 
     model: string
 ): Promise<string> => {
     const ai = getClient();
